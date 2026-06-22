@@ -10,7 +10,9 @@
 queue.db
 
 # Local configuration with secrets
+config.toml
 config.local.toml
+config.local
 .env
 
 # Editor / OS
