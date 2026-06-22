@@ -16,6 +16,7 @@ oxid-relay-transport-smtp.workspace = true
 oxid-relay-queue-sqlite.workspace = true
 oxid-relay-http-api.workspace = true
 oxid-relay-logging.workspace = true
+oxid-relay-plugin.workspace = true
 
 tokio.workspace = true
 clap.workspace = true
