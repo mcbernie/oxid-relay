@@ -33,7 +33,9 @@ pub fn plugin_dirs() -> Vec<PathBuf> {
     }
     #[cfg(target_os = "macos")]
     {
-        vec![PathBuf::from("/Library/Application Support/OxidRelay/plugins")]
+        vec![PathBuf::from(
+            "/Library/Application Support/OxidRelay/plugins",
+        )]
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {

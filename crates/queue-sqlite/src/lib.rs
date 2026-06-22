@@ -226,7 +226,8 @@ impl Queue for SqliteQueue {
     }
 
     async fn mark_sent(&self, id: MailId) -> Result<()> {
-        self.set_status(id, MailStatus::Sent, None, false, None).await
+        self.set_status(id, MailStatus::Sent, None, false, None)
+            .await
     }
 
     async fn mark_failed(&self, id: MailId, error: String, retry_at: DateTime<Utc>) -> Result<()> {
@@ -484,13 +485,19 @@ mod tests {
             .await
             .expect("requeue");
         assert_eq!(reset, 1);
-        assert_eq!(queue.get(id).await.expect("get").status, MailStatus::Pending);
+        assert_eq!(
+            queue.get(id).await.expect("get").status,
+            MailStatus::Pending
+        );
     }
 
     #[tokio::test]
     async fn mark_unknown_returns_not_found() {
         let queue = memory_queue().await;
-        let err = queue.mark_sent(Uuid::new_v4()).await.expect_err("not found");
+        let err = queue
+            .mark_sent(Uuid::new_v4())
+            .await
+            .expect_err("not found");
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 }

@@ -162,7 +162,13 @@ impl Handler for RelayHandler {
         response::OK
     }
 
-    fn data_start(&mut self, _domain: &str, _from: &str, _is8bit: bool, _to: &[String]) -> Response {
+    fn data_start(
+        &mut self,
+        _domain: &str,
+        _from: &str,
+        _is8bit: bool,
+        _to: &[String],
+    ) -> Response {
         self.data.clear();
         response::OK
     }
@@ -253,7 +259,11 @@ impl Handler for RelayHandler {
 
 /// Removes surrounding angle brackets and whitespace from an address.
 fn strip_brackets(raw: &str) -> String {
-    raw.trim().trim_start_matches('<').trim_end_matches('>').trim().to_string()
+    raw.trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim()
+        .to_string()
 }
 
 /// Parses whitelist entries (bare IPs or CIDR ranges) into networks.
@@ -334,7 +344,11 @@ fn configured_server(
 
 /// Runs the SMTP ingress, binding to the address from the configuration.
 /// Blocks until the server stops; intended to run on a dedicated thread.
-pub fn serve(config: Arc<Config>, queue: Arc<dyn Queue>, handle: Handle) -> Result<(), IngressError> {
+pub fn serve(
+    config: Arc<Config>,
+    queue: Arc<dyn Queue>,
+    handle: Handle,
+) -> Result<(), IngressError> {
     let smtp = config.ingress.smtp.as_ref().ok_or(IngressError::Disabled)?;
     let ctx = context(&config, queue, handle);
     let mut server = configured_server(&smtp.hostname, ctx)?;
@@ -342,7 +356,9 @@ pub fn serve(config: Arc<Config>, queue: Arc<dyn Queue>, handle: Handle) -> Resu
         .with_addr(&smtp.bind)
         .map_err(|err| IngressError::Bind(err.to_string()))?;
     tracing::info!(bind = %smtp.bind, "smtp ingress listening");
-    server.serve().map_err(|err| IngressError::Serve(err.to_string()))
+    server
+        .serve()
+        .map_err(|err| IngressError::Serve(err.to_string()))
 }
 
 /// Runs the SMTP ingress on an already bound listener. Used for testing on an
@@ -357,7 +373,9 @@ pub fn serve_with_listener(
     let ctx = context(&config, queue, handle);
     let mut server = configured_server(&smtp.hostname, ctx)?;
     server.with_tcp_listener(listener);
-    server.serve().map_err(|err| IngressError::Serve(err.to_string()))
+    server
+        .serve()
+        .map_err(|err| IngressError::Serve(err.to_string()))
 }
 
 #[cfg(test)]
@@ -416,7 +434,9 @@ mod tests {
 
     /// Runs a full SMTP submission and returns the reply after end-of-data.
     async fn submit_mail(port: u16, from: &str, rcpt: &str, subject: &str) -> String {
-        let stream = TcpStream::connect(("127.0.0.1", port)).await.expect("connect");
+        let stream = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect");
         let (read_half, mut write) = stream.into_split();
         let mut reader = BufReader::new(read_half);
 
@@ -581,7 +601,9 @@ mod tests {
             let _ = serve_with_listener(config, server_queue, handle, listener);
         });
 
-        let stream = TcpStream::connect(("127.0.0.1", port)).await.expect("connect");
+        let stream = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect");
         let (read_half, mut write) = stream.into_split();
         let mut reader = BufReader::new(read_half);
 
@@ -607,7 +629,10 @@ mod tests {
         assert!(reply(&mut reader).await.starts_with("250"));
         write.write_all(b"QUIT\r\n").await.expect("quit");
 
-        let due = queue.fetch_due(10, chrono::Utc::now()).await.expect("fetch");
+        let due = queue
+            .fetch_due(10, chrono::Utc::now())
+            .await
+            .expect("fetch");
         assert_eq!(due.len(), 1);
         // %original% is the full incoming subject as sent, so the matched name
         // also remains in the body of the subject.
@@ -633,7 +658,10 @@ mod tests {
         let code = submit_mail(port, "relay@example.com", "original@example.com", "Hallo").await;
         assert!(code.starts_with("250"), "expected acceptance, got {code}");
 
-        let due = queue.fetch_due(10, chrono::Utc::now()).await.expect("fetch");
+        let due = queue
+            .fetch_due(10, chrono::Utc::now())
+            .await
+            .expect("fetch");
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].transport.as_deref(), Some("graph"));
         assert_eq!(due[0].to.len(), 1);
@@ -660,7 +688,10 @@ mod tests {
         let code = submit_mail(port, "blocked@example.com", "x@example.com", "Hallo").await;
         assert!(code.starts_with("550"), "expected rejection, got {code}");
 
-        let due = queue.fetch_due(10, chrono::Utc::now()).await.expect("fetch");
+        let due = queue
+            .fetch_due(10, chrono::Utc::now())
+            .await
+            .expect("fetch");
         assert!(due.is_empty());
     }
 
@@ -685,7 +716,10 @@ mod tests {
         let code = submit_mail(port, "alarm@example.com", "ignored@example.com", "Alarm").await;
         assert!(code.starts_with("250"), "expected acceptance, got {code}");
 
-        let mut due = queue.fetch_due(10, chrono::Utc::now()).await.expect("fetch");
+        let mut due = queue
+            .fetch_due(10, chrono::Utc::now())
+            .await
+            .expect("fetch");
         assert_eq!(due.len(), 2, "one queue entry per target");
         due.sort_by(|a, b| a.transport.cmp(&b.transport));
         // ntfy keeps the original recipient; teams overrides it.

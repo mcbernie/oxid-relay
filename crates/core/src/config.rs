@@ -124,16 +124,22 @@ impl Config {
                 return Err(ConfigError::Invalid("mail.smtp.host is empty".into()));
             }
             if smtp.port == 0 {
-                return Err(ConfigError::Invalid("mail.smtp.port must be non-zero".into()));
+                return Err(ConfigError::Invalid(
+                    "mail.smtp.port must be non-zero".into(),
+                ));
             }
         }
 
         // Dispatcher knobs must be positive; zero values would stall delivery.
         if self.dispatcher.batch_size == 0 {
-            return Err(ConfigError::Invalid("dispatcher.batch_size must be >= 1".into()));
+            return Err(ConfigError::Invalid(
+                "dispatcher.batch_size must be >= 1".into(),
+            ));
         }
         if self.dispatcher.concurrency == 0 {
-            return Err(ConfigError::Invalid("dispatcher.concurrency must be >= 1".into()));
+            return Err(ConfigError::Invalid(
+                "dispatcher.concurrency must be >= 1".into(),
+            ));
         }
         if self.dispatcher.poll_interval_secs == 0 {
             return Err(ConfigError::Invalid(
@@ -141,7 +147,9 @@ impl Config {
             ));
         }
         if self.dispatcher.max_attempts == 0 {
-            return Err(ConfigError::Invalid("dispatcher.max_attempts must be >= 1".into()));
+            return Err(ConfigError::Invalid(
+                "dispatcher.max_attempts must be >= 1".into(),
+            ));
         }
 
         // Every subject format must keep the original subject somewhere.
@@ -756,8 +764,14 @@ mod tests {
             std::env::set_var("OXID_TEST_GRAPH_SECRET", "s3cr3t");
         }
         let settings = config.plugin_settings("graph").expect("settings");
-        assert_eq!(settings.get("tenant_id").map(String::as_str), Some("tenant-123"));
-        assert_eq!(settings.get("client_secret").map(String::as_str), Some("s3cr3t"));
+        assert_eq!(
+            settings.get("tenant_id").map(String::as_str),
+            Some("tenant-123")
+        );
+        assert_eq!(
+            settings.get("client_secret").map(String::as_str),
+            Some("s3cr3t")
+        );
     }
 
     #[test]
@@ -777,7 +791,10 @@ mod tests {
         "#;
         let config = Config::from_toml_str(raw).expect("valid config");
         assert_eq!(
-            config.auth.authenticate("monitoring", "whatever").expect("auth"),
+            config
+                .auth
+                .authenticate("monitoring", "whatever")
+                .expect("auth"),
             Some("monitoring".to_string())
         );
     }
@@ -799,7 +816,10 @@ mod tests {
             Some("backup-host".to_string())
         );
         // Wrong password is rejected.
-        assert_eq!(config.auth.authenticate("backup", "falsch").expect("auth"), None);
+        assert_eq!(
+            config.auth.authenticate("backup", "falsch").expect("auth"),
+            None
+        );
         // Unknown user with self-registration disabled is rejected.
         assert_eq!(config.auth.authenticate("fremd", "x").expect("auth"), None);
     }
@@ -847,7 +867,10 @@ mod tests {
                 // The "reject" entry is dropped.
                 assert_eq!(targets.len(), 2);
                 assert_eq!(targets[0].transport, "teams");
-                assert_eq!(targets[0].recipients.as_ref().unwrap()[0].email, "ops@teams.local");
+                assert_eq!(
+                    targets[0].recipients.as_ref().unwrap()[0].email,
+                    "ops@teams.local"
+                );
                 assert_eq!(targets[1].transport, "ntfy");
                 assert!(targets[1].recipients.is_none());
             }

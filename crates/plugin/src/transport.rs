@@ -116,10 +116,7 @@ mod tests {
     }
 
     impl HttpClient for MockHttp {
-        fn execute(
-            &self,
-            request: HttpRequest,
-        ) -> std::result::Result<HttpResponse, String> {
+        fn execute(&self, request: HttpRequest) -> std::result::Result<HttpResponse, String> {
             self.seen.lock().expect("lock").push(request.clone());
             for (needle, status, body) in &self.rules {
                 if request.url.contains(needle) {
@@ -200,11 +197,7 @@ mod tests {
     #[tokio::test]
     async fn graph_plugin_propagates_token_failure() {
         let mock = Arc::new(MockHttp {
-            rules: vec![(
-                "login.microsoftonline.com".into(),
-                401,
-                "denied".into(),
-            )],
+            rules: vec![("login.microsoftonline.com".into(), 401, "denied".into())],
             seen: Mutex::new(vec![]),
         });
 

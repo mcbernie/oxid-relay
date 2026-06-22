@@ -386,8 +386,12 @@ mod tests {
             },
             ..DispatcherConfig::default()
         };
-        let dispatcher =
-            Dispatcher::new(queue.clone(), transports(Arc::new(FailTransport)), None, config);
+        let dispatcher = Dispatcher::new(
+            queue.clone(),
+            transports(Arc::new(FailTransport)),
+            None,
+            config,
+        );
         dispatcher.tick().await;
 
         let loaded = status_of(&queue, id).await;
@@ -399,7 +403,10 @@ mod tests {
     async fn deliveries_run_in_parallel() {
         let queue = memory_queue().await;
         for _ in 0..4 {
-            queue.enqueue(mail_for(Some("smtp"))).await.expect("enqueue");
+            queue
+                .enqueue(mail_for(Some("smtp")))
+                .await
+                .expect("enqueue");
         }
 
         let current = Arc::new(AtomicUsize::new(0));

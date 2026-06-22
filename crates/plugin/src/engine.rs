@@ -109,9 +109,7 @@ fn map_to_pairs(map: &Map) -> Result<Vec<(String, String)>, Box<EvalAltResult>> 
     let mut pairs = Vec::with_capacity(map.len());
     for (key, value) in map.iter() {
         let text = value.clone().into_string().map_err(|actual| {
-            Box::<EvalAltResult>::from(format!(
-                "value for '{key}' must be a string, got {actual}"
-            ))
+            Box::<EvalAltResult>::from(format!("value for '{key}' must be a string, got {actual}"))
         })?;
         pairs.push((key.to_string(), text));
     }
