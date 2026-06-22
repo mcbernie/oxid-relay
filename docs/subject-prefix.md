@@ -77,3 +77,16 @@ format = "[Backup %name%] %original%"
 - Format-Logik gehört in `crates/core` (reine Geschäftslogik, testbar ohne
   Transport/DB).
 - Konfiguration (`[subject]`) wird vom Binary geladen und an den Core übergeben.
+
+## Umsetzung (v1)
+
+- `SubjectConfig::render(name, original)` in `crates/core` ersetzt `%name%` und
+  `%original%`. `%original%` ist immer der vollständige eingehende Betreff.
+- Der SMTP-Ingress wendet den Prefix beim Enqueue an. Modus A (anonym) ermittelt
+  den Namen aus dem Betreff über `auth.anonymous.subject_match` (Regex mit
+  benannter Gruppe `name`). Greift das Muster nicht, bleibt der Betreff
+  unverändert.
+- Hinweis: Steckt der Name im Betreff (Modus A), erscheint er dank `%original%`
+  doppelt (z. B. `[Abs: Server 187] Server 187: ...`). Über Muster und Format
+  steuerbar. Für authentifizierte Absender (Modus B, mit AUTH/TLS) kommt der
+  Name aus den Zugangsdaten, ohne Dopplung.

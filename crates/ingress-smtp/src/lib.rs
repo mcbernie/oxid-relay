@@ -17,6 +17,7 @@ use mail_parser::MessageParser;
 use mailin_embedded::{Handler, Response, Server, SslConfig, response};
 use oxid_relay_core::config::{AuthConfig, SubjectConfig};
 use oxid_relay_core::{Address, Config, CoreError, Mail, NewMail, Queue};
+use regex::Regex;
 use thiserror::Error;
 use tokio::runtime::Handle;
 use uuid::Uuid;
@@ -46,6 +47,8 @@ struct Context {
     auth: AuthConfig,
     anonymous_enabled: bool,
     subject: SubjectConfig,
+    /// Compiled pattern (mode A) to extract the sender name from the subject.
+    subject_matcher: Option<Regex>,
 }
 
 /// Per-connection SMTP handler. Cloned by the server for each session, so the
@@ -104,8 +107,12 @@ impl RelayHandler {
             .map(|addr| Address::new(strip_brackets(addr)))
             .collect();
 
-        // Apply the sender label only for an authenticated identity.
-        let subject = match &self.authenticated_as {
+        // Determine the sender name: an authenticated identity takes
+        // precedence; otherwise (mode A) try to extract it from the subject.
+        let sender = self.authenticated_as.clone().or_else(|| {
+            extract_name(self.ctx.subject_matcher.as_ref(), &original_subject)
+        });
+        let subject = match &sender {
             Some(name) => self.ctx.subject.render(name, &original_subject),
             None => original_subject,
         };
@@ -228,6 +235,27 @@ fn is_allowed(nets: &[IpNet], ip: IpAddr) -> bool {
     nets.iter().any(|net| net.contains(&ip))
 }
 
+/// Extracts the sender name from a subject using the configured pattern.
+/// The pattern must contain a named capture group `name`.
+fn extract_name(matcher: Option<&Regex>, subject: &str) -> Option<String> {
+    matcher
+        .and_then(|re| re.captures(subject))
+        .and_then(|caps| caps.name("name"))
+        .map(|m| m.as_str().to_string())
+}
+
+/// Compiles the optional subject-match pattern, logging and ignoring an
+/// invalid pattern rather than failing startup.
+fn compile_matcher(pattern: Option<&String>) -> Option<Regex> {
+    pattern.and_then(|pattern| match Regex::new(pattern) {
+        Ok(regex) => Some(regex),
+        Err(err) => {
+            tracing::warn!(error = %err, "invalid subject_match pattern, ignoring");
+            None
+        }
+    })
+}
+
 /// Builds the shared context from the configuration.
 fn context(config: &Config, queue: Arc<dyn Queue>, handle: Handle) -> Arc<Context> {
     Arc::new(Context {
@@ -237,6 +265,7 @@ fn context(config: &Config, queue: Arc<dyn Queue>, handle: Handle) -> Arc<Contex
         auth: config.auth.clone(),
         anonymous_enabled: config.auth.anonymous.enabled,
         subject: config.subject.clone(),
+        subject_matcher: compile_matcher(config.auth.anonymous.subject_match.as_ref()),
     })
 }
 
@@ -431,5 +460,70 @@ mod tests {
     fn strip_brackets_removes_wrappers() {
         assert_eq!(strip_brackets("<a@b.de>"), "a@b.de");
         assert_eq!(strip_brackets("  a@b.de "), "a@b.de");
+    }
+
+    #[test]
+    fn extract_name_uses_named_group() {
+        let re = Regex::new(r"^(?P<name>Server ?\d+):").expect("regex");
+        assert_eq!(
+            extract_name(Some(&re), "Server 187: Status Okay"),
+            Some("Server 187".to_string())
+        );
+        assert_eq!(extract_name(Some(&re), "no match here"), None);
+        assert_eq!(extract_name(None, "Server 1: x"), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn applies_subject_prefix_from_pattern() {
+        let raw = r#"
+            [ingress.smtp]
+            [security]
+            ip_whitelist = ["127.0.0.1"]
+            [auth.anonymous]
+            enabled = true
+            subject_match = '^(?P<name>Server ?\d+):'
+        "#;
+        let config = Arc::new(Config::from_toml_str(raw).expect("config"));
+        let queue = memory_queue().await;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let handle = Handle::current();
+        let server_queue = queue.clone();
+        std::thread::spawn(move || {
+            let _ = serve_with_listener(config, server_queue, handle, listener);
+        });
+
+        let stream = TcpStream::connect(("127.0.0.1", port)).await.expect("connect");
+        let (read_half, mut write) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+
+        assert!(reply(&mut reader).await.starts_with("220"));
+        write.write_all(b"EHLO test\r\n").await.expect("ehlo");
+        assert!(reply(&mut reader).await.starts_with("250"));
+        write
+            .write_all(b"MAIL FROM:<relay@example.com>\r\n")
+            .await
+            .expect("mail");
+        assert!(reply(&mut reader).await.starts_with("250"));
+        write
+            .write_all(b"RCPT TO:<ziel@example.com>\r\n")
+            .await
+            .expect("rcpt");
+        assert!(reply(&mut reader).await.starts_with("250"));
+        write.write_all(b"DATA\r\n").await.expect("data");
+        assert!(reply(&mut reader).await.starts_with("354"));
+        write
+            .write_all(b"Subject: Server 187: Status Okay\r\n\r\nKoerper\r\n.\r\n")
+            .await
+            .expect("body");
+        assert!(reply(&mut reader).await.starts_with("250"));
+        write.write_all(b"QUIT\r\n").await.expect("quit");
+
+        let due = queue.fetch_due(10, chrono::Utc::now()).await.expect("fetch");
+        assert_eq!(due.len(), 1);
+        // %original% is the full incoming subject as sent, so the matched name
+        // also remains in the body of the subject.
+        assert_eq!(due[0].subject, "[Abs: Server 187] Server 187: Status Okay");
     }
 }
