@@ -1220,10 +1220,12 @@ name = "oxid-relay-transport-smtp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "lettre",
  "oxid-relay-core",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

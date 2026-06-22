@@ -12,3 +12,7 @@ async-trait.workspace = true
 lettre.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
+chrono.workspace = true
