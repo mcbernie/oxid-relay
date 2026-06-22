@@ -116,12 +116,8 @@ async fn main() -> anyhow::Result<()> {
         default_transport,
         DispatcherConfig::default(),
     );
-    tracing::info!("dispatcher running, press Ctrl-C to stop");
-    dispatcher
-        .run(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await;
+    tracing::info!("dispatcher running, send SIGINT or SIGTERM to stop");
+    dispatcher.run(shutdown_signal()).await;
 
     tracing::info!("OxidRelay stopped");
     Ok(())
@@ -134,6 +130,30 @@ fn load_dotenv() {
     #[cfg(debug_assertions)]
     if let Ok(path) = dotenvy::dotenv() {
         eprintln!("loaded environment from {}", path.display());
+    }
+}
+
+/// Resolves when the process should shut down: SIGINT (Ctrl-C) or, on Unix,
+/// SIGTERM (sent by systemd and launchd on stop).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 

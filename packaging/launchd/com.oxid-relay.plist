@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.oxid-relay</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/oxid-relay</string>
+        <string>--config</string>
+        <string>/usr/local/etc/oxid-relay/config.toml</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>/usr/local/var/lib/oxid-relay</string>
+
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/oxid-relay.log</string>
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/oxid-relay.err.log</string>
+
+    <!-- Release builds do not auto-load .env. Provide secrets here, or load
+         them in a wrapper. The plist is plain text, so keep it root-only. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>OXID_RELAY_CONFIG</key>
+        <string>/usr/local/etc/oxid-relay/config.toml</string>
+    </dict>
+</dict>
+</plist>

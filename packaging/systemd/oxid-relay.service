@@ -1,0 +1,39 @@
+[Unit]
+Description=OxidRelay mail relay and notification gateway
+Documentation=https://github.com/mcbernie/oxid-relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/oxid-relay --config /etc/oxid-relay/config.toml
+
+# Secrets (CLIENT_SECRET_AZURE, TEAMS_WEBHOOK_URL, ...) come from an environment
+# file. Create it with mode 0600, owned by the service user. The leading "-"
+# makes it optional.
+EnvironmentFile=-/etc/oxid-relay/oxid-relay.env
+
+Restart=on-failure
+RestartSec=5
+
+# Run as an unprivileged service account. Create with:
+#   useradd --system --home /var/lib/oxid-relay --shell /usr/sbin/nologin oxid-relay
+User=oxid-relay
+Group=oxid-relay
+
+# The queue database and its lock live here; with this WorkingDirectory the
+# relative "queue.db" from the config resolves to /var/lib/oxid-relay/queue.db.
+StateDirectory=oxid-relay
+WorkingDirectory=/var/lib/oxid-relay
+
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

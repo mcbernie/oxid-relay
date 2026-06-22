@@ -77,6 +77,52 @@ Secrets are never written into the configuration file. A field whose name ends
 in `_env` holds the name of an environment variable; the value is read from
 that variable at runtime.
 
+The process shuts down cleanly on SIGINT (Ctrl-C) and, on Unix, on SIGTERM
+(sent by service managers on stop).
+
+## Running as a service
+
+Run exactly one instance per queue. A second instance against the same queue
+database refuses to start (an exclusive lock guards it).
+
+### Linux (systemd)
+
+A unit file is provided in `packaging/systemd/oxid-relay.service`.
+
+```
+sudo useradd --system --home /var/lib/oxid-relay --shell /usr/sbin/nologin oxid-relay
+sudo install -m 0755 target/release/oxid-relay /usr/local/bin/oxid-relay
+sudo install -d /etc/oxid-relay
+sudo install -m 0640 config.toml /etc/oxid-relay/config.toml
+# Secrets, mode 0600:
+printf 'CLIENT_SECRET_AZURE=...\nTEAMS_WEBHOOK_URL=...\n' | sudo tee /etc/oxid-relay/oxid-relay.env >/dev/null
+sudo chmod 0600 /etc/oxid-relay/oxid-relay.env
+sudo cp packaging/systemd/oxid-relay.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now oxid-relay
+journalctl -u oxid-relay -f
+```
+
+Release builds do not auto-load `.env`; the unit reads secrets from
+`/etc/oxid-relay/oxid-relay.env`. The queue and its lock live under
+`/var/lib/oxid-relay`; plugins are looked up in `/etc/oxid-relay/plugins`.
+
+### macOS (launchd)
+
+A LaunchDaemon plist is provided in `packaging/launchd/com.oxid-relay.plist`.
+
+```
+sudo cp target/release/oxid-relay /usr/local/bin/oxid-relay
+sudo mkdir -p /usr/local/etc/oxid-relay /usr/local/var/lib/oxid-relay
+sudo cp config.toml /usr/local/etc/oxid-relay/config.toml
+sudo cp packaging/launchd/com.oxid-relay.plist /Library/LaunchDaemons/
+sudo launchctl load /Library/LaunchDaemons/com.oxid-relay.plist
+```
+
+### Windows
+
+A Windows service wrapper and an MSI installer are planned (see the roadmap).
+
 ## Configuration
 
 OxidRelay reads a single TOML file. A documented example lives in
@@ -376,13 +422,17 @@ Not yet implemented:
   currently anonymous, protected only by the IP whitelist. The auth logic
   (modes B1/B2) is prepared but not wired up.
 
+Available:
+
+- Single-instance lock on the queue, clean shutdown on SIGINT/SIGTERM, and
+  service files for Linux (systemd) and macOS (launchd).
+
 Planned:
 
 - STARTTLS plus AUTH LOGIN/PLAIN for the ingress.
 - Dispatcher tuning via configuration (concurrency, poll interval, retry
   backoff, attempt limit).
-- Platform service integration: systemd unit, Windows service, MSI installer
-  (cargo-wix).
+- Windows service wrapper and an MSI installer (cargo-wix).
 - GitHub Actions workflows for build, test, lint, and releases.
 - Additional transports and providers (for example Mailgun, Amazon SES, SMS).
 
