@@ -80,8 +80,9 @@ impl SqliteQueue {
                 status      TEXT NOT NULL,
                 attempts    INTEGER NOT NULL DEFAULT 0,
                 last_error  TEXT,
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                next_attempt_at TEXT NOT NULL
             )
             "#,
         )
@@ -100,6 +101,7 @@ impl SqliteQueue {
         let attempts: i64 = row.get("attempts");
         let created_at: String = row.get("created_at");
         let updated_at: String = row.get("updated_at");
+        let next_attempt_at: String = row.get("next_attempt_at");
 
         let from: Address = serde_json::from_str(&sender)
             .map_err(|err| CoreError::Queue(format!("decode sender: {err}")))?;
@@ -119,7 +121,48 @@ impl SqliteQueue {
             last_error: row.get("last_error"),
             created_at: parse_time(&created_at)?,
             updated_at: parse_time(&updated_at)?,
+            next_attempt_at: parse_time(&next_attempt_at)?,
         })
+    }
+
+    /// Applies a status transition in a single statement.
+    ///
+    /// `last_error` is always written (NULL clears it). `bump_attempts` adds one
+    /// to the attempt counter. `next_attempt_at`, when set, reschedules the mail;
+    /// otherwise the existing value is kept.
+    async fn set_status(
+        &self,
+        id: MailId,
+        status: MailStatus,
+        last_error: Option<String>,
+        bump_attempts: bool,
+        next_attempt_at: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        let result = sqlx::query(
+            r#"
+            UPDATE mails
+            SET status = ?,
+                last_error = ?,
+                updated_at = ?,
+                attempts = attempts + ?,
+                next_attempt_at = COALESCE(?, next_attempt_at)
+            WHERE id = ?
+            "#,
+        )
+        .bind(status_to_str(status))
+        .bind(last_error)
+        .bind(Utc::now().to_rfc3339())
+        .bind(if bump_attempts { 1_i64 } else { 0_i64 })
+        .bind(next_attempt_at.map(|t| t.to_rfc3339()))
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|err| CoreError::Queue(err.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(CoreError::NotFound(id.to_string()));
+        }
+        Ok(())
     }
 }
 
@@ -135,8 +178,8 @@ impl Queue for SqliteQueue {
             r#"
             INSERT INTO mails
                 (id, sender, recipients, subject, body, transport,
-                 status, attempts, last_error, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 status, attempts, last_error, created_at, updated_at, next_attempt_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(mail.id.to_string())
@@ -150,6 +193,7 @@ impl Queue for SqliteQueue {
         .bind(&mail.last_error)
         .bind(mail.created_at.to_rfc3339())
         .bind(mail.updated_at.to_rfc3339())
+        .bind(mail.next_attempt_at.to_rfc3339())
         .execute(&self.pool)
         .await
         .map_err(|err| CoreError::Queue(err.to_string()))?;
@@ -157,15 +201,17 @@ impl Queue for SqliteQueue {
         Ok(mail)
     }
 
-    async fn fetch_pending(&self, limit: u32) -> Result<Vec<Mail>> {
+    async fn fetch_due(&self, limit: u32, now: DateTime<Utc>) -> Result<Vec<Mail>> {
         let rows = sqlx::query(
             r#"
             SELECT * FROM mails
             WHERE status IN ('pending', 'failed')
-            ORDER BY created_at ASC
+              AND next_attempt_at <= ?
+            ORDER BY next_attempt_at ASC
             LIMIT ?
             "#,
         )
+        .bind(now.to_rfc3339())
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await
@@ -174,34 +220,39 @@ impl Queue for SqliteQueue {
         rows.iter().map(Self::row_to_mail).collect()
     }
 
-    async fn update_status(
-        &self,
-        id: MailId,
-        status: MailStatus,
-        last_error: Option<String>,
-    ) -> Result<()> {
+    async fn mark_sending(&self, id: MailId) -> Result<()> {
+        self.set_status(id, MailStatus::Sending, None, false, None)
+            .await
+    }
+
+    async fn mark_sent(&self, id: MailId) -> Result<()> {
+        self.set_status(id, MailStatus::Sent, None, false, None).await
+    }
+
+    async fn mark_failed(&self, id: MailId, error: String, retry_at: DateTime<Utc>) -> Result<()> {
+        self.set_status(id, MailStatus::Failed, Some(error), true, Some(retry_at))
+            .await
+    }
+
+    async fn mark_dead(&self, id: MailId, error: String) -> Result<()> {
+        self.set_status(id, MailStatus::Dead, Some(error), true, None)
+            .await
+    }
+
+    async fn requeue_sending(&self) -> Result<u64> {
         let result = sqlx::query(
             r#"
             UPDATE mails
-            SET status = ?,
-                last_error = ?,
-                attempts = attempts + 1,
-                updated_at = ?
-            WHERE id = ?
+            SET status = 'pending', updated_at = ?
+            WHERE status = 'sending'
             "#,
         )
-        .bind(status_to_str(status))
-        .bind(last_error)
         .bind(Utc::now().to_rfc3339())
-        .bind(id.to_string())
         .execute(&self.pool)
         .await
         .map_err(|err| CoreError::Queue(err.to_string()))?;
 
-        if result.rows_affected() == 0 {
-            return Err(CoreError::NotFound(id.to_string()));
-        }
-        Ok(())
+        Ok(result.rows_affected())
     }
 
     async fn get(&self, id: MailId) -> Result<Mail> {
@@ -275,70 +326,130 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_pending_returns_pending_and_failed() {
+    async fn fetch_due_returns_pending() {
         let queue = memory_queue().await;
         queue.enqueue(sample()).await.expect("enqueue");
 
-        let pending = queue.fetch_pending(10).await.expect("fetch");
-        assert_eq!(pending.len(), 1);
+        let due = queue.fetch_due(10, Utc::now()).await.expect("fetch");
+        assert_eq!(due.len(), 1);
     }
 
     #[tokio::test]
-    async fn fetch_pending_skips_sent() {
+    async fn fetch_due_skips_sent() {
         let queue = memory_queue().await;
         let mail = sample();
         let id = mail.id;
         queue.enqueue(mail).await.expect("enqueue");
-        queue
-            .update_status(id, MailStatus::Sent, None)
-            .await
-            .expect("update");
+        queue.mark_sent(id).await.expect("mark sent");
 
-        let pending = queue.fetch_pending(10).await.expect("fetch");
-        assert!(pending.is_empty());
+        let due = queue.fetch_due(10, Utc::now()).await.expect("fetch");
+        assert!(due.is_empty());
     }
 
     #[tokio::test]
-    async fn update_status_marks_sent_and_counts_attempt() {
+    async fn fetch_due_skips_in_flight() {
         let queue = memory_queue().await;
         let mail = sample();
         let id = mail.id;
         queue.enqueue(mail).await.expect("enqueue");
+        queue.mark_sending(id).await.expect("mark sending");
 
-        queue
-            .update_status(id, MailStatus::Sent, None)
-            .await
-            .expect("update");
+        let due = queue.fetch_due(10, Utc::now()).await.expect("fetch");
+        assert!(due.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mark_sending_does_not_count_attempt() {
+        let queue = memory_queue().await;
+        let mail = sample();
+        let id = mail.id;
+        queue.enqueue(mail).await.expect("enqueue");
+        queue.mark_sending(id).await.expect("mark sending");
+
+        let loaded = queue.get(id).await.expect("get");
+        assert_eq!(loaded.status, MailStatus::Sending);
+        assert_eq!(loaded.attempts, 0);
+    }
+
+    #[tokio::test]
+    async fn mark_sent_sets_status() {
+        let queue = memory_queue().await;
+        let mail = sample();
+        let id = mail.id;
+        queue.enqueue(mail).await.expect("enqueue");
+        queue.mark_sent(id).await.expect("mark sent");
 
         let loaded = queue.get(id).await.expect("get");
         assert_eq!(loaded.status, MailStatus::Sent);
-        assert_eq!(loaded.attempts, 1);
     }
 
     #[tokio::test]
-    async fn update_status_records_error_for_failure() {
+    async fn mark_failed_reschedules_into_future() {
         let queue = memory_queue().await;
         let mail = sample();
         let id = mail.id;
         queue.enqueue(mail).await.expect("enqueue");
 
+        let retry_at = Utc::now() + chrono::Duration::minutes(5);
         queue
-            .update_status(id, MailStatus::Failed, Some("smtp timeout".into()))
+            .mark_failed(id, "smtp timeout".into(), retry_at)
             .await
-            .expect("update");
+            .expect("mark failed");
 
         let loaded = queue.get(id).await.expect("get");
         assert_eq!(loaded.status, MailStatus::Failed);
+        assert_eq!(loaded.attempts, 1);
         assert_eq!(loaded.last_error.as_deref(), Some("smtp timeout"));
+
+        // Not yet due, so a fetch at "now" must skip it.
+        let due_now = queue.fetch_due(10, Utc::now()).await.expect("fetch");
+        assert!(due_now.is_empty());
+        // Due again once the retry time has passed.
+        let due_later = queue
+            .fetch_due(10, retry_at + chrono::Duration::seconds(1))
+            .await
+            .expect("fetch");
+        assert_eq!(due_later.len(), 1);
     }
 
     #[tokio::test]
-    async fn update_status_unknown_returns_not_found() {
+    async fn mark_dead_counts_attempt_and_stays_out_of_queue() {
         let queue = memory_queue().await;
-        let err = queue
-            .update_status(Uuid::new_v4(), MailStatus::Sent, None)
+        let mail = sample();
+        let id = mail.id;
+        queue.enqueue(mail).await.expect("enqueue");
+        queue.mark_dead(id, "permanent".into()).await.expect("dead");
+
+        let loaded = queue.get(id).await.expect("get");
+        assert_eq!(loaded.status, MailStatus::Dead);
+        assert_eq!(loaded.attempts, 1);
+
+        let due = queue
+            .fetch_due(10, Utc::now() + chrono::Duration::days(1))
             .await
-            .expect_err("not found");
+            .expect("fetch");
+        assert!(due.is_empty());
+    }
+
+    #[tokio::test]
+    async fn requeue_sending_recovers_in_flight() {
+        let queue = memory_queue().await;
+        let mail = sample();
+        let id = mail.id;
+        queue.enqueue(mail).await.expect("enqueue");
+        queue.mark_sending(id).await.expect("mark sending");
+
+        let reset = queue.requeue_sending().await.expect("requeue");
+        assert_eq!(reset, 1);
+
+        let due = queue.fetch_due(10, Utc::now()).await.expect("fetch");
+        assert_eq!(due.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mark_unknown_returns_not_found() {
+        let queue = memory_queue().await;
+        let err = queue.mark_sent(Uuid::new_v4()).await.expect_err("not found");
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 }

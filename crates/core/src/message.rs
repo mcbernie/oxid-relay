@@ -102,6 +102,9 @@ pub struct Mail {
     pub created_at: DateTime<Utc>,
     /// Timestamp of the last update.
     pub updated_at: DateTime<Utc>,
+    /// Earliest time the mail may be (re-)attempted. Set into the future on
+    /// failure to implement backoff; equals `created_at` for a fresh mail.
+    pub next_attempt_at: DateTime<Utc>,
 }
 
 impl Mail {
@@ -119,6 +122,7 @@ impl Mail {
             last_error: None,
             created_at: now,
             updated_at: now,
+            next_attempt_at: now,
         }
     }
 }
