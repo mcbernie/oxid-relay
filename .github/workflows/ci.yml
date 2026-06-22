@@ -46,3 +46,59 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  # Build a release binary and bundle it with the plugins and example config so
+  # it can be downloaded and tried out locally. Temporary, until a real release
+  # workflow exists.
+  package:
+    name: package (${{ matrix.os }})
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            bin: oxid-relay.exe
+          - os: ubuntu-latest
+            bin: oxid-relay
+          - os: macos-latest
+            bin: oxid-relay
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install NASM (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release -p oxid-relay
+
+      - name: Assemble bundle
+        shell: bash
+        run: |
+          mkdir -p dist/plugins
+          cp "target/release/${{ matrix.bin }}" dist/
+          cp -r plugins/* dist/plugins/
+          cp config.example.toml dist/
+          cat > dist/README-artifact.txt <<'TXT'
+          OxidRelay test build.
+
+          1. Copy config.example.toml to config.toml and edit it.
+          2. Point the relay at the bundled plugins:
+               Windows (PowerShell): $env:OXID_RELAY_PLUGIN_DIR = "$PWD\plugins"
+               Linux/macOS:          export OXID_RELAY_PLUGIN_DIR="$PWD/plugins"
+          3. Provide plugin secrets via environment variables (e.g.
+             CLIENT_SECRET_AZURE, TEAMS_WEBHOOK_URL).
+          4. Run: oxid-relay --config config.toml
+          TXT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxid-relay-${{ matrix.os }}
+          path: dist/

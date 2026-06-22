@@ -19,9 +19,15 @@ pub struct Plugin {
 
 /// Returns the directories scanned for plugins.
 ///
-/// Debug builds use a local `plugins` directory for development. Release builds
-/// use the platform-typical system location.
+/// `OXID_RELAY_PLUGIN_DIR` overrides everything when set (one or more paths,
+/// separated by the platform path separator) — handy for ad-hoc testing of a
+/// downloaded build. Otherwise debug builds use a local `plugins` directory and
+/// release builds use the platform-typical system location.
 pub fn plugin_dirs() -> Vec<PathBuf> {
+    if let Some(value) = std::env::var_os("OXID_RELAY_PLUGIN_DIR") {
+        return std::env::split_paths(&value).collect();
+    }
+
     if cfg!(debug_assertions) {
         return vec![PathBuf::from("plugins")];
     }
@@ -105,6 +111,19 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static DIR_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    #[test]
+    fn plugin_dir_env_override_wins() {
+        // SAFETY: test-only; the variable is removed again right after reading.
+        unsafe {
+            std::env::set_var("OXID_RELAY_PLUGIN_DIR", "/custom/plugins");
+        }
+        let dirs = plugin_dirs();
+        unsafe {
+            std::env::remove_var("OXID_RELAY_PLUGIN_DIR");
+        }
+        assert_eq!(dirs, vec![PathBuf::from("/custom/plugins")]);
+    }
 
     struct NoopHttp;
     impl HttpClient for NoopHttp {

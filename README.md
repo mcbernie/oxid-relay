@@ -80,6 +80,22 @@ that variable at runtime.
 The process shuts down cleanly on SIGINT (Ctrl-C) and, on Unix, on SIGTERM
 (sent by service managers on stop).
 
+## Test builds
+
+Until there is a release workflow, the CI run on `main` attaches a bundle per OS
+(`oxid-relay-windows-latest`, `-ubuntu-latest`, `-macos-latest`) to the workflow
+run under the Actions tab. Each contains the release binary, the bundled
+`plugins/`, `config.example.toml` and a short README. Download, extract, then:
+
+```
+# point the relay at the bundled plugins (release builds do not use ./plugins)
+export OXID_RELAY_PLUGIN_DIR="$PWD/plugins"   # PowerShell: $env:OXID_RELAY_PLUGIN_DIR = "$PWD\plugins"
+cp config.example.toml config.toml            # then edit
+./oxid-relay --config config.toml
+```
+
+These are unsigned test builds, not releases.
+
 ## Running as a service
 
 Run exactly one instance per queue. A second instance against the same queue
@@ -343,6 +359,9 @@ named after the manifest.
 
 Plugin directories:
 
+- `OXID_RELAY_PLUGIN_DIR` (if set): overrides everything. One or more paths,
+  separated by the platform path separator. Useful for trying out a downloaded
+  build against a local `plugins` folder.
 - Debug builds: `./plugins` (relative to the working directory).
 - Linux: `/etc/oxid-relay/plugins`
 - macOS: `/Library/Application Support/OxidRelay/plugins`
