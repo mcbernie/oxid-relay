@@ -55,13 +55,16 @@ async fn main() -> anyhow::Result<()> {
 
     // Available transports keyed by name.
     let mut transports: HashMap<String, Arc<dyn Transport>> = HashMap::new();
-    let mut default_transport = None;
+    // Default transport: explicit config wins, otherwise SMTP when present.
+    let mut default_transport = config.mail.default_transport.clone();
 
     if let Some(smtp) = &config.mail.smtp {
         match SmtpTransport::new(smtp) {
             Ok(transport) => {
                 transports.insert("smtp".to_string(), Arc::new(transport));
-                default_transport = Some("smtp".to_string());
+                if default_transport.is_none() {
+                    default_transport = Some("smtp".to_string());
+                }
                 tracing::info!(host = %smtp.host, "smtp transport ready");
             }
             Err(err) => tracing::warn!(error = %err, "smtp transport unavailable"),

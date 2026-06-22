@@ -195,6 +195,10 @@ fn default_ingress_hostname() -> String {
 pub struct MailConfig {
     /// SMTP transport, if configured.
     pub smtp: Option<SmtpConfig>,
+    /// Name of the transport used for mails that do not name one. Falls back to
+    /// `smtp` when an SMTP transport is configured and this is unset.
+    #[serde(default)]
+    pub default_transport: Option<String>,
 }
 
 /// SMTP connection settings (e.g. Microsoft 365).
@@ -591,6 +595,16 @@ mod tests {
         assert_eq!(config.auth.authenticate("backup", "falsch").expect("auth"), None);
         // Unknown user with self-registration disabled is rejected.
         assert_eq!(config.auth.authenticate("fremd", "x").expect("auth"), None);
+    }
+
+    #[test]
+    fn mail_default_transport_parses() {
+        let raw = r#"
+            [mail]
+            default_transport = "graph"
+        "#;
+        let config = Config::from_toml_str(raw).expect("valid config");
+        assert_eq!(config.mail.default_transport.as_deref(), Some("graph"));
     }
 
     #[test]
