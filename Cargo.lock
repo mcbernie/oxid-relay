@@ -1291,6 +1291,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxid-relay-dispatcher"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "oxid-relay-core",
+ "oxid-relay-queue-sqlite",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "oxid-relay-http-api"
 version = "0.1.0"
 dependencies = [

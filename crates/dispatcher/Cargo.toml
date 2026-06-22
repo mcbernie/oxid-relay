@@ -1,0 +1,18 @@
+[package]
+name = "oxid-relay-dispatcher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+oxid-relay-core.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+oxid-relay-queue-sqlite.workspace = true
+async-trait.workspace = true
+uuid.workspace = true

@@ -8,6 +8,7 @@ members = [
     "crates/http-api",
     "crates/logging",
     "crates/plugin",
+    "crates/dispatcher",
 ]
 
 [workspace.package]
@@ -26,6 +27,7 @@ oxid-relay-queue-sqlite = { path = "crates/queue-sqlite" }
 oxid-relay-http-api = { path = "crates/http-api" }
 oxid-relay-logging = { path = "crates/logging" }
 oxid-relay-plugin = { path = "crates/plugin" }
+oxid-relay-dispatcher = { path = "crates/dispatcher" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
