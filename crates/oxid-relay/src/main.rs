@@ -1,16 +1,21 @@
 //! OxidRelay binary entry point.
 //!
-//! Wires together CLI, configuration and logging. Queue, transports and the
-//! HTTP API will be added on top incrementally.
+//! Wires together CLI, configuration, logging, the queue, the transports
+//! (SMTP plus Rhai plugins) and the background dispatcher.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-
 use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
-use oxid_relay_core::Config;
-use oxid_relay_plugin::{ReqwestClient, build_engine, discover, plugin_dirs};
+use oxid_relay_core::{Config, Transport};
+use oxid_relay_dispatcher::{Dispatcher, DispatcherConfig};
+use oxid_relay_plugin::{
+    ReqwestClient, RhaiTransport, build_engine, discover, plugin_dirs, string_config_map,
+};
+use oxid_relay_queue_sqlite::SqliteQueue;
+use oxid_relay_transport_smtp::SmtpTransport;
 
 /// OxidRelay - cross-platform mail relay and notification service.
 #[derive(Debug, Parser)]
@@ -38,43 +43,98 @@ async fn main() -> anyhow::Result<()> {
         "OxidRelay started"
     );
 
-    // Plugin discovery builds a blocking HTTP client and compiles scripts;
-    // run it off the async runtime.
-    if let Err(err) = tokio::task::spawn_blocking(discover_plugins).await {
-        tracing::warn!(error = %err, "plugin scan task failed");
+    // Durable queue.
+    let db_url = sqlite_url(&config.queue.database);
+    let queue = Arc::new(
+        SqliteQueue::connect(&db_url)
+            .await
+            .with_context(|| format!("opening queue {db_url}"))?,
+    );
+
+    // Available transports keyed by name.
+    let mut transports: HashMap<String, Arc<dyn Transport>> = HashMap::new();
+    let mut default_transport = None;
+
+    if let Some(smtp) = &config.mail.smtp {
+        match SmtpTransport::new(smtp) {
+            Ok(transport) => {
+                transports.insert("smtp".to_string(), Arc::new(transport));
+                default_transport = Some("smtp".to_string());
+                tracing::info!(host = %smtp.host, "smtp transport ready");
+            }
+            Err(err) => tracing::warn!(error = %err, "smtp transport unavailable"),
+        }
     }
 
-    // TODO: wire queue, transports and the dispatcher.
+    for (name, transport) in build_plugin_transports(&config) {
+        tracing::info!(plugin = %name, "plugin transport ready");
+        transports.insert(name, transport);
+    }
+
+    if transports.is_empty() {
+        tracing::warn!("no transports configured; mails cannot be delivered");
+    }
+
+    // Background dispatcher; runs until Ctrl-C.
+    let dispatcher = Dispatcher::new(
+        queue,
+        transports,
+        default_transport,
+        DispatcherConfig::default(),
+    );
+    tracing::info!("dispatcher running, press Ctrl-C to stop");
+    dispatcher
+        .run(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await;
+
+    tracing::info!("OxidRelay stopped");
     Ok(())
 }
 
-/// Scans the platform plugin directories and logs the discovered plugins.
-fn discover_plugins() {
+/// Builds a SQLite connection URL from the configured database value.
+fn sqlite_url(database: &str) -> String {
+    if database.starts_with("sqlite:") {
+        database.to_string()
+    } else {
+        format!("sqlite:{database}")
+    }
+}
+
+/// Discovers plugins and turns each into a transport, resolving its settings
+/// (including `_env` secrets) from the configuration.
+fn build_plugin_transports(config: &Config) -> Vec<(String, Arc<dyn Transport>)> {
     let http = match ReqwestClient::new() {
         Ok(client) => Arc::new(client),
         Err(err) => {
-            tracing::warn!(error = %err, "could not build HTTP client, skipping plugin scan");
-            return;
+            tracing::warn!(error = %err, "could not build HTTP client, skipping plugins");
+            return Vec::new();
         }
     };
-    let engine = build_engine(http);
+    let engine = Arc::new(build_engine(http));
 
+    let mut transports = Vec::new();
     for dir in plugin_dirs() {
-        match discover(&engine, &dir) {
-            Ok(plugins) => {
-                for plugin in &plugins {
-                    tracing::info!(
-                        name = %plugin.manifest.name,
-                        version = %plugin.manifest.version,
-                        kind = %plugin.manifest.kind,
-                        dir = %plugin.dir.display(),
-                        "plugin loaded"
-                    );
-                }
-            }
+        let plugins = match discover(engine.as_ref(), &dir) {
+            Ok(plugins) => plugins,
             Err(err) => {
                 tracing::warn!(dir = %dir.display(), error = %err, "plugin discovery failed");
+                continue;
             }
+        };
+        for plugin in plugins {
+            let name = plugin.manifest.name.clone();
+            let settings = match config.plugin_settings(&name) {
+                Ok(settings) => settings,
+                Err(err) => {
+                    tracing::warn!(plugin = %name, error = %err, "plugin config unresolved, skipping");
+                    continue;
+                }
+            };
+            let transport = RhaiTransport::new(plugin, engine.clone(), string_config_map(settings));
+            transports.push((name, Arc::new(transport) as Arc<dyn Transport>));
         }
     }
+    transports
 }

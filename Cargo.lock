@@ -1266,6 +1266,7 @@ dependencies = [
  "anyhow",
  "clap",
  "oxid-relay-core",
+ "oxid-relay-dispatcher",
  "oxid-relay-http-api",
  "oxid-relay-logging",
  "oxid-relay-plugin",
