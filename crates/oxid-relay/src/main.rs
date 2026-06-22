@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
+use fs4::FileExt;
 use oxid_relay_core::{Config, Queue, Transport};
 use oxid_relay_dispatcher::{Dispatcher, DispatcherConfig};
 use oxid_relay_plugin::{
@@ -45,6 +46,9 @@ async fn main() -> anyhow::Result<()> {
         log_level = %config.logging.level,
         "OxidRelay started"
     );
+
+    // Refuse to start a second instance against the same queue.
+    let _instance_lock = acquire_instance_lock(&config.queue.database)?;
 
     // Durable queue.
     let db_url = sqlite_url(&config.queue.database);
@@ -130,6 +134,33 @@ fn load_dotenv() {
     #[cfg(debug_assertions)]
     if let Ok(path) = dotenvy::dotenv() {
         eprintln!("loaded environment from {}", path.display());
+    }
+}
+
+/// Acquires an exclusive lock tied to the queue database so only one instance
+/// runs against it. The returned file handle must be kept alive for the whole
+/// process; dropping it (on exit) releases the lock. In-memory databases need
+/// no lock.
+fn acquire_instance_lock(database: &str) -> anyhow::Result<Option<std::fs::File>> {
+    if database.contains(":memory:") || database.trim().is_empty() {
+        return Ok(None);
+    }
+    let path = format!("{database}.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("opening lock file {path}"))?;
+
+    match FileExt::try_lock(&file) {
+        Ok(()) => Ok(Some(file)),
+        Err(fs4::TryLockError::WouldBlock) => anyhow::bail!(
+            "another OxidRelay instance is already running on this queue (lock {path} is held)"
+        ),
+        Err(fs4::TryLockError::Error(err)) => {
+            Err(anyhow::Error::from(err).context(format!("locking {path}")))
+        }
     }
 }
 

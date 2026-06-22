@@ -28,6 +28,7 @@ toml.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 dotenvy = "0.15"
+fs4 = "1.1.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"
