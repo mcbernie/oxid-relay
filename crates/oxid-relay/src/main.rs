@@ -79,6 +79,16 @@ async fn main() -> anyhow::Result<()> {
     if transports.is_empty() {
         tracing::warn!("no transports configured; mails cannot be delivered");
     }
+    // A default transport that was never built (e.g. a plugin skipped due to a
+    // missing secret) would silently fail every untargeted mail. Surface it now.
+    if let Some(name) = &default_transport {
+        if !transports.contains_key(name) {
+            tracing::error!(
+                default = %name,
+                "default transport not available; check the transport config and required secrets"
+            );
+        }
+    }
 
     // SMTP ingress runs on its own thread (mailin uses blocking IO). It shares
     // the queue and enqueues incoming mail via the runtime handle.
