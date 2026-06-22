@@ -15,7 +15,7 @@ use std::sync::Arc;
 use ipnet::IpNet;
 use mail_parser::MessageParser;
 use mailin_embedded::{Handler, Response, Server, SslConfig, response};
-use oxid_relay_core::config::{AuthConfig, SubjectConfig};
+use oxid_relay_core::config::{AuthConfig, Route, RoutingConfig, SubjectConfig};
 use oxid_relay_core::{Address, Config, CoreError, Mail, NewMail, Queue};
 use regex::Regex;
 use thiserror::Error;
@@ -49,6 +49,8 @@ struct Context {
     subject: SubjectConfig,
     /// Compiled pattern (mode A) to extract the sender name from the subject.
     subject_matcher: Option<Regex>,
+    /// Channel/recipient routing by sender.
+    routing: RoutingConfig,
 }
 
 /// Per-connection SMTP handler. Cloned by the server for each session, so the
@@ -88,8 +90,10 @@ impl RelayHandler {
         }
     }
 
-    /// Builds a validated [`Mail`] from the received message and envelope.
-    fn build_mail(&self) -> Result<Mail, CoreError> {
+    /// Builds the mail payload from the received message and envelope, applying
+    /// the sender label. Recipients and transport are the originals; routing is
+    /// applied afterwards.
+    fn build_new_mail(&self) -> Result<NewMail, CoreError> {
         let parsed = MessageParser::default()
             .parse(&self.data)
             .ok_or_else(|| CoreError::InvalidMail("could not parse message".into()))?;
@@ -109,23 +113,22 @@ impl RelayHandler {
 
         // Determine the sender name: an authenticated identity takes
         // precedence; otherwise (mode A) try to extract it from the subject.
-        let sender = self.authenticated_as.clone().or_else(|| {
-            extract_name(self.ctx.subject_matcher.as_ref(), &original_subject)
-        });
+        let sender = self
+            .authenticated_as
+            .clone()
+            .or_else(|| extract_name(self.ctx.subject_matcher.as_ref(), &original_subject));
         let subject = match &sender {
             Some(name) => self.ctx.subject.render(name, &original_subject),
             None => original_subject,
         };
 
-        let new = NewMail {
+        Ok(NewMail {
             from,
             to,
             subject,
             body,
             transport: None,
-        };
-        new.validate()?;
-        Ok(Mail::from_new(new, chrono::Utc::now(), Uuid::new_v4()))
+        })
     }
 }
 
@@ -170,13 +173,39 @@ impl Handler for RelayHandler {
     }
 
     fn data_end(&mut self) -> Response {
-        let mail = match self.build_mail() {
-            Ok(mail) => mail,
+        let mut new = match self.build_new_mail() {
+            Ok(new) => new,
             Err(err) => {
                 tracing::warn!(error = %err, "rejected incoming mail");
                 return Response::custom(554, format!("rejected: {err}"));
             }
         };
+
+        // Apply routing: pick the channel and optionally override recipients,
+        // or reject the sender outright.
+        if self.ctx.routing.is_active() {
+            match self.ctx.routing.resolve(&new.from.email) {
+                Route::Reject => {
+                    tracing::info!(from = %new.from.email, "mail rejected by routing policy");
+                    return Response::custom(550, "sender not permitted".to_string());
+                }
+                Route::Deliver {
+                    transport,
+                    recipients,
+                } => {
+                    new.transport = Some(transport);
+                    if let Some(recipients) = recipients {
+                        new.to = recipients;
+                    }
+                }
+            }
+        }
+
+        if let Err(err) = new.validate() {
+            tracing::warn!(error = %err, "rejected incoming mail");
+            return Response::custom(554, format!("rejected: {err}"));
+        }
+        let mail = Mail::from_new(new, chrono::Utc::now(), Uuid::new_v4());
 
         // Block on the durable enqueue; this runs on an SMTP worker thread, not
         // on the async runtime, so blocking is safe here.
@@ -266,6 +295,7 @@ fn context(config: &Config, queue: Arc<dyn Queue>, handle: Handle) -> Arc<Contex
         anonymous_enabled: config.auth.anonymous.enabled,
         subject: config.subject.clone(),
         subject_matcher: compile_matcher(config.auth.anonymous.subject_match.as_ref()),
+        routing: config.routing.clone(),
     })
 }
 
@@ -355,6 +385,47 @@ mod tests {
                 return line;
             }
         }
+    }
+
+    /// Starts the ingress on an ephemeral port and returns the port.
+    fn start_server(config: Arc<Config>, queue: Arc<SqliteQueue>) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let handle = Handle::current();
+        std::thread::spawn(move || {
+            let _ = serve_with_listener(config, queue, handle, listener);
+        });
+        port
+    }
+
+    /// Runs a full SMTP submission and returns the reply after end-of-data.
+    async fn submit_mail(port: u16, from: &str, rcpt: &str, subject: &str) -> String {
+        let stream = TcpStream::connect(("127.0.0.1", port)).await.expect("connect");
+        let (read_half, mut write) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+
+        reply(&mut reader).await; // greeting
+        write.write_all(b"EHLO test\r\n").await.expect("ehlo");
+        reply(&mut reader).await;
+        write
+            .write_all(format!("MAIL FROM:<{from}>\r\n").as_bytes())
+            .await
+            .expect("mail");
+        reply(&mut reader).await;
+        write
+            .write_all(format!("RCPT TO:<{rcpt}>\r\n").as_bytes())
+            .await
+            .expect("rcpt");
+        reply(&mut reader).await;
+        write.write_all(b"DATA\r\n").await.expect("data");
+        reply(&mut reader).await;
+        write
+            .write_all(format!("Subject: {subject}\r\n\r\nBody\r\n.\r\n").as_bytes())
+            .await
+            .expect("body");
+        let end = reply(&mut reader).await;
+        write.write_all(b"QUIT\r\n").await.expect("quit");
+        end
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -525,5 +596,55 @@ mod tests {
         // %original% is the full incoming subject as sent, so the matched name
         // also remains in the body of the subject.
         assert_eq!(due[0].subject, "[Abs: Server 187] Server 187: Status Okay");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn routing_overrides_recipient_and_transport() {
+        let raw = r#"
+            [ingress.smtp]
+            [security]
+            ip_whitelist = ["127.0.0.1"]
+            [auth.anonymous]
+            enabled = true
+            [routing.senders."relay@example.com"]
+            transport = "graph"
+            recipients = ["override@example.com"]
+        "#;
+        let config = Arc::new(Config::from_toml_str(raw).expect("config"));
+        let queue = memory_queue().await;
+        let port = start_server(config, queue.clone());
+
+        let code = submit_mail(port, "relay@example.com", "original@example.com", "Hallo").await;
+        assert!(code.starts_with("250"), "expected acceptance, got {code}");
+
+        let due = queue.fetch_due(10, chrono::Utc::now()).await.expect("fetch");
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].transport.as_deref(), Some("graph"));
+        assert_eq!(due[0].to.len(), 1);
+        assert_eq!(due[0].to[0].email, "override@example.com");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn routing_rejects_unconfigured_sender() {
+        // A rule exists for another sender and there is no default, so an
+        // unconfigured sender is rejected.
+        let raw = r#"
+            [ingress.smtp]
+            [security]
+            ip_whitelist = ["127.0.0.1"]
+            [auth.anonymous]
+            enabled = true
+            [routing.senders."ok@example.com"]
+            transport = "graph"
+        "#;
+        let config = Arc::new(Config::from_toml_str(raw).expect("config"));
+        let queue = memory_queue().await;
+        let port = start_server(config, queue.clone());
+
+        let code = submit_mail(port, "blocked@example.com", "x@example.com", "Hallo").await;
+        assert!(code.starts_with("550"), "expected rejection, got {code}");
+
+        let due = queue.fetch_due(10, chrono::Utc::now()).await.expect("fetch");
+        assert!(due.is_empty());
     }
 }

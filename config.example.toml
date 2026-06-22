@@ -50,6 +50,24 @@ password_env = "BACKUP_PASSWORD"
 [auth.self_register]
 enabled = false
 
+# Routing: pick the channel (transport) and optionally override recipients,
+# based on the envelope sender. Only active if at least one rule or a default
+# is set. A rule with transport = "reject" (or an unmatched sender without a
+# default) refuses the mail at submission time.
+[routing]
+# Default for senders without a specific rule. Omit to reject unknown senders.
+[routing.default]
+transport = "graph"
+
+# Example: mail from this sender goes to Teams, to a fixed channel recipient.
+[routing.senders."alerts@teams.local"]
+transport = "teams"
+recipients = ["ops-channel@teams.local"]
+
+# Example: refuse a specific sender.
+[routing.senders."noreply@blocked.local"]
+transport = "reject"
+
 # Per-plugin settings, keyed by plugin name. Passed to the plugin script as its
 # `config` map. Keys ending in _env are resolved from the named environment
 # variable and exposed under the key without the suffix (e.g. client_secret_env
