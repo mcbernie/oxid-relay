@@ -40,6 +40,11 @@ pub trait Queue: Send + Sync {
     /// recover mails left in-flight by a crash. Returns the number reset.
     async fn requeue_sending(&self) -> Result<u64>;
 
+    /// Resets only mails that have been in-flight (sending) since before
+    /// `older_than`, treating them as orphaned by a crashed or stuck delivery.
+    /// Returns the number reset.
+    async fn requeue_stale_sending(&self, older_than: DateTime<Utc>) -> Result<u64>;
+
     /// Returns a single mail by id.
     async fn get(&self, id: MailId) -> Result<Mail>;
 }

@@ -21,5 +21,5 @@ fn send(mail, config) {
     if res.status < 200 || res.status >= 300 {
         throw `ntfy failed: ${res.status} ${res.body}`;
     }
-    log_info(`ntfy: published to ${config.topic}`);
+    log_info(`ntfy: published to ${config.topic} (status ${res.status})`);
 }

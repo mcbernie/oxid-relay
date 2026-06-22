@@ -255,6 +255,23 @@ impl Queue for SqliteQueue {
         Ok(result.rows_affected())
     }
 
+    async fn requeue_stale_sending(&self, older_than: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            UPDATE mails
+            SET status = 'pending', updated_at = ?
+            WHERE status = 'sending' AND updated_at < ?
+            "#,
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(older_than.to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(|err| CoreError::Queue(err.to_string()))?;
+
+        Ok(result.rows_affected())
+    }
+
     async fn get(&self, id: MailId) -> Result<Mail> {
         let row = sqlx::query("SELECT * FROM mails WHERE id = ?")
             .bind(id.to_string())
@@ -444,6 +461,30 @@ mod tests {
 
         let due = queue.fetch_due(10, Utc::now()).await.expect("fetch");
         assert_eq!(due.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn requeue_stale_sending_only_resets_orphaned() {
+        let queue = memory_queue().await;
+        let mail = sample();
+        let id = mail.id;
+        queue.enqueue(mail).await.expect("enqueue");
+        queue.mark_sending(id).await.expect("mark sending");
+
+        // Cutoff in the past: the in-flight mail is not yet stale.
+        let reset = queue
+            .requeue_stale_sending(Utc::now() - chrono::Duration::seconds(60))
+            .await
+            .expect("requeue");
+        assert_eq!(reset, 0);
+
+        // Cutoff in the future: the mail counts as orphaned and is reset.
+        let reset = queue
+            .requeue_stale_sending(Utc::now() + chrono::Duration::seconds(60))
+            .await
+            .expect("requeue");
+        assert_eq!(reset, 1);
+        assert_eq!(queue.get(id).await.expect("get").status, MailStatus::Pending);
     }
 
     #[tokio::test]

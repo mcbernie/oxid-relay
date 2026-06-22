@@ -18,5 +18,5 @@ fn send(mail, config) {
     if res.status < 200 || res.status >= 300 {
         throw `teams webhook failed: ${res.status} ${res.body}`;
     }
-    log_info(`teams: message posted`);
+    log_info(`teams: message posted (status ${res.status})`);
 }

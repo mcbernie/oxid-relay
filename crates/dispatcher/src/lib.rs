@@ -26,6 +26,9 @@ pub struct DispatcherConfig {
     pub concurrency: usize,
     /// Delay between polling ticks.
     pub poll_interval: Duration,
+    /// Maximum time a mail may stay in-flight before it is considered orphaned
+    /// and reclaimed for another attempt.
+    pub sending_lease: Duration,
     /// Retry behaviour for failed deliveries.
     pub retry: RetryPolicy,
 }
@@ -36,6 +39,7 @@ impl Default for DispatcherConfig {
             batch_size: 64,
             concurrency: 8,
             poll_interval: Duration::from_secs(5),
+            sending_lease: Duration::from_secs(120),
             retry: RetryPolicy::default(),
         }
     }
@@ -87,6 +91,17 @@ impl Dispatcher {
     /// Returns the number of mails processed.
     pub async fn tick(&self) -> usize {
         let now = Utc::now();
+
+        // Reclaim mails left in-flight by a crashed or stuck delivery, so they
+        // are retried instead of staying claimed forever.
+        let lease = chrono::Duration::from_std(self.inner.config.sending_lease)
+            .unwrap_or_else(|_| chrono::Duration::seconds(120));
+        match self.inner.queue.requeue_stale_sending(now - lease).await {
+            Ok(0) => {}
+            Ok(count) => tracing::warn!(count, "reclaimed stale in-flight mails"),
+            Err(err) => tracing::error!(error = %err, "reclaiming stale mails failed"),
+        }
+
         let due = match self
             .inner
             .queue

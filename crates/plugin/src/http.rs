@@ -60,6 +60,8 @@ impl ReqwestClient {
 impl HttpClient for ReqwestClient {
     fn execute(&self, request: HttpRequest) -> Result<HttpResponse, String> {
         let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .map_err(|err| err.to_string())?;
 
