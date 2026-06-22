@@ -1,0 +1,21 @@
+[package]
+name = "oxid-relay-ingress-smtp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+ipnet = "2.12.0"
+mail-parser = "0.11.4"
+mailin-embedded = "0.8.3"
+oxid-relay-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+oxid-relay-queue-sqlite.workspace = true

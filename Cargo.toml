@@ -9,6 +9,7 @@ members = [
     "crates/logging",
     "crates/plugin",
     "crates/dispatcher",
+    "crates/ingress-smtp",
 ]
 
 [workspace.package]
@@ -28,6 +29,7 @@ oxid-relay-http-api = { path = "crates/http-api" }
 oxid-relay-logging = { path = "crates/logging" }
 oxid-relay-plugin = { path = "crates/plugin" }
 oxid-relay-dispatcher = { path = "crates/dispatcher" }
+oxid-relay-ingress-smtp = { path = "crates/ingress-smtp" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
