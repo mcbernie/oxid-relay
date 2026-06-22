@@ -6,8 +6,18 @@
 //! added on top of this base.
 
 use std::error::Error;
+use std::io::IsTerminal;
 
 use tracing_subscriber::EnvFilter;
+
+/// Whether to emit ANSI colour codes.
+///
+/// Only on an interactive terminal, and never on Windows, whose classic console
+/// does not process ANSI escapes and would otherwise print raw codes. When the
+/// output is redirected (file, journal, service) colours are disabled too.
+fn use_ansi() -> bool {
+    std::io::stdout().is_terminal() && !cfg!(windows)
+}
 
 /// Builds the level filter, preferring `RUST_LOG`, then the configured level,
 /// then a hard `info` fallback.
@@ -21,6 +31,7 @@ fn build_filter(level: &str) -> EnvFilter {
 /// was already installed.
 pub fn init(level: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
     tracing_subscriber::fmt()
+        .with_ansi(use_ansi())
         .with_env_filter(build_filter(level))
         .try_init()
 }
