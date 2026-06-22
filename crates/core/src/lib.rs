@@ -4,11 +4,13 @@
 //! abstraction and the queue abstraction. It intentionally does not depend on
 //! any concrete transport (SMTP, Graph, SES) or storage backend (SQLite).
 
+pub mod config;
 pub mod error;
 pub mod message;
 pub mod queue;
 pub mod transport;
 
+pub use config::{Config, ConfigError, ConfigResult};
 pub use error::{CoreError, Result};
 pub use message::{Address, Mail, MailId, MailStatus, NewMail};
 pub use queue::Queue;

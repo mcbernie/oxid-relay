@@ -1,0 +1,44 @@
+# OxidRelay example configuration.
+# Copy to config.toml (or config.local.toml) and adjust.
+# The relay is LAN-only; never expose it to the public internet.
+
+[mail.smtp]
+host = "smtp.office365.com"
+port = 587
+username = "relay@example.com"
+# Password is read from this environment variable, never stored here.
+password_env = "MAIL_PASSWORD"
+
+[queue]
+database = "queue.db"
+
+[logging]
+# One of: trace, debug, info, warn, error
+level = "info"
+
+[subject]
+# Placeholders: %name% (sender identity), %original% (incoming subject).
+# Must contain %original%.
+format = "[Abs: %name%] %original%"
+
+# Optional per-sender override.
+[subject.senders."Server01.company.local"]
+format = "[%name%] %original%"
+
+[security]
+# Mandatory in every mode. Empty means nothing is allowed.
+ip_whitelist = ["10.0.0.0/8", "192.168.0.0/16"]
+
+# Mode A: anonymous, identify sender from the subject.
+[auth.anonymous]
+enabled = true
+subject_match = "^(?P<name>Server ?\\d+):"
+
+# Mode B1: fixed credentials per service.
+[auth.services."backup-host"]
+username = "backup"
+password_env = "BACKUP_PASSWORD"
+
+# Mode B2: self-registration from supplied credentials.
+[auth.self_register]
+enabled = false
