@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
-use oxid_relay_core::{Config, Transport};
+use oxid_relay_core::{Config, Queue, Transport};
 use oxid_relay_dispatcher::{Dispatcher, DispatcherConfig};
 use oxid_relay_plugin::{
     ReqwestClient, RhaiTransport, build_engine, discover, plugin_dirs, string_config_map,
@@ -30,8 +30,10 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let config = Config::load(&cli.config)
-        .with_context(|| format!("loading config from {}", cli.config.display()))?;
+    let config = Arc::new(
+        Config::load(&cli.config)
+            .with_context(|| format!("loading config from {}", cli.config.display()))?,
+    );
 
     oxid_relay_logging::init(&config.logging.level)
         .map_err(|err| anyhow::anyhow!("initialising logging: {err}"))?;
@@ -45,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Durable queue.
     let db_url = sqlite_url(&config.queue.database);
-    let queue = Arc::new(
+    let queue: Arc<dyn Queue> = Arc::new(
         SqliteQueue::connect(&db_url)
             .await
             .with_context(|| format!("opening queue {db_url}"))?,
@@ -66,13 +68,27 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    for (name, transport) in build_plugin_transports(&config) {
+    for (name, transport) in build_plugin_transports(config.as_ref()) {
         tracing::info!(plugin = %name, "plugin transport ready");
         transports.insert(name, transport);
     }
 
     if transports.is_empty() {
         tracing::warn!("no transports configured; mails cannot be delivered");
+    }
+
+    // SMTP ingress runs on its own thread (mailin uses blocking IO). It shares
+    // the queue and enqueues incoming mail via the runtime handle.
+    if config.ingress.smtp.is_some() {
+        let ingress_config = config.clone();
+        let ingress_queue = queue.clone();
+        let handle = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            if let Err(err) = oxid_relay_ingress_smtp::serve(ingress_config, ingress_queue, handle)
+            {
+                tracing::error!(error = %err, "smtp ingress stopped");
+            }
+        });
     }
 
     // Background dispatcher; runs until Ctrl-C.
