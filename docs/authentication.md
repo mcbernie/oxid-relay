@@ -76,8 +76,9 @@ enabled = true
   der Config.
 - **Betreff-Match Modus A:** Verhalten, wenn das Muster nicht greift —
   ablehnen oder Fallback-Name?
-- **Transport-Protokoll:** liefert der Dienst per SMTP (lettre als Server-Seite
-  nötig) oder über die HTTP-API ein? Beides möglich, Auth-Modell gilt für beide.
+- **Transport-Protokoll:** primärer Eingang ist SMTP-Annahme im LAN, die
+  HTTP-API ist nachrangig (siehe [transports.md](transports.md)). Das
+  Auth-Modell gilt für beide Eingänge.
 
 ## Verortung im Code
 
