@@ -70,6 +70,10 @@ pub struct Config {
     /// Authentication / sender identification settings.
     #[serde(default)]
     pub auth: AuthConfig,
+    /// Per-plugin settings, keyed by plugin name. Each value is a flat table of
+    /// string key/value pairs passed to the plugin script as its `config` map.
+    #[serde(default)]
+    pub plugins: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl Config {
@@ -128,6 +132,29 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// Returns the resolved settings for a plugin.
+    ///
+    /// Keys ending in `_env` are treated as secrets: their value names an
+    /// environment variable, and the resolved value is exposed under the key
+    /// without the `_env` suffix. All other keys pass through unchanged.
+    pub fn plugin_settings(&self, name: &str) -> ConfigResult<BTreeMap<String, String>> {
+        let mut resolved = BTreeMap::new();
+        let Some(raw) = self.plugins.get(name) else {
+            return Ok(resolved);
+        };
+        for (key, value) in raw {
+            match key.strip_suffix("_env") {
+                Some(stripped) => {
+                    resolved.insert(stripped.to_string(), resolve_env(value)?);
+                }
+                None => {
+                    resolved.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        Ok(resolved)
     }
 }
 
@@ -436,6 +463,43 @@ mod tests {
         assert!(matches!(
             Config::from_toml_str(raw),
             Err(ConfigError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn plugin_settings_passthrough_and_env_resolution() {
+        let raw = r#"
+            [plugins.graph]
+            tenant_id = "tenant-123"
+            client_secret_env = "OXID_TEST_GRAPH_SECRET"
+        "#;
+        let config = Config::from_toml_str(raw).expect("valid config");
+
+        // SAFETY: test-only, single-threaded access to a uniquely named var.
+        unsafe {
+            std::env::set_var("OXID_TEST_GRAPH_SECRET", "s3cr3t");
+        }
+        let settings = config.plugin_settings("graph").expect("settings");
+        assert_eq!(settings.get("tenant_id").map(String::as_str), Some("tenant-123"));
+        assert_eq!(settings.get("client_secret").map(String::as_str), Some("s3cr3t"));
+    }
+
+    #[test]
+    fn plugin_settings_unknown_plugin_is_empty() {
+        let config = Config::from_toml_str("").expect("valid config");
+        assert!(config.plugin_settings("nope").expect("settings").is_empty());
+    }
+
+    #[test]
+    fn plugin_settings_missing_env_reports_error() {
+        let raw = r#"
+            [plugins.graph]
+            client_secret_env = "OXID_TEST_DEFINITELY_UNSET"
+        "#;
+        let config = Config::from_toml_str(raw).expect("valid config");
+        assert!(matches!(
+            config.plugin_settings("graph"),
+            Err(ConfigError::MissingEnv(_))
         ));
     }
 

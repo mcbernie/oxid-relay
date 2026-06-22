@@ -42,3 +42,13 @@ password_env = "BACKUP_PASSWORD"
 # Mode B2: self-registration from supplied credentials.
 [auth.self_register]
 enabled = false
+
+# Per-plugin settings, keyed by plugin name. Passed to the plugin script as its
+# `config` map. Keys ending in _env are resolved from the named environment
+# variable and exposed under the key without the suffix (e.g. client_secret_env
+# becomes client_secret). Secrets must use the _env form, never plain text.
+[plugins.graph]
+tenant_id = "00000000-0000-0000-0000-000000000000"
+client_id = "11111111-1111-1111-1111-111111111111"
+client_secret_env = "GRAPH_CLIENT_SECRET"
+sender = "relay@example.com"
