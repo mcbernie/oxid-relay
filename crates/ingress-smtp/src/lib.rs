@@ -15,7 +15,7 @@ use std::sync::Arc;
 use ipnet::IpNet;
 use mail_parser::MessageParser;
 use mailin_embedded::{Handler, Response, Server, SslConfig, response};
-use oxid_relay_core::config::{AuthConfig, Route, RoutingConfig, SubjectConfig};
+use oxid_relay_core::config::{AuthConfig, Route, RouteTarget, RoutingConfig, SubjectConfig};
 use oxid_relay_core::{Address, Config, CoreError, Mail, NewMail, Queue};
 use regex::Regex;
 use thiserror::Error;
@@ -173,7 +173,7 @@ impl Handler for RelayHandler {
     }
 
     fn data_end(&mut self) -> Response {
-        let mut new = match self.build_new_mail() {
+        let new = match self.build_new_mail() {
             Ok(new) => new,
             Err(err) => {
                 tracing::warn!(error = %err, "rejected incoming mail");
@@ -181,44 +181,60 @@ impl Handler for RelayHandler {
             }
         };
 
-        // Apply routing: pick the channel and optionally override recipients,
-        // or reject the sender outright.
-        if self.ctx.routing.is_active() {
+        // Apply routing: build the list of delivery targets (transport plus an
+        // optional recipient override), or reject the sender outright. Without
+        // active routing, a single delivery keeps the original recipients and
+        // lets the dispatcher pick the default transport.
+        let targets: Vec<RouteTarget> = if self.ctx.routing.is_active() {
             match self.ctx.routing.resolve(&new.from.email) {
                 Route::Reject => {
                     tracing::info!(from = %new.from.email, "mail rejected by routing policy");
                     return Response::custom(550, "sender not permitted".to_string());
                 }
-                Route::Deliver {
-                    transport,
-                    recipients,
-                } => {
-                    new.transport = Some(transport);
-                    if let Some(recipients) = recipients {
-                        new.to = recipients;
-                    }
+                Route::Deliver(targets) => targets,
+            }
+        } else {
+            vec![RouteTarget {
+                transport: String::new(),
+                recipients: None,
+            }]
+        };
+
+        // Enqueue one mail per target. Each becomes an independent queue entry
+        // so the dispatcher delivers and retries them separately.
+        let mut accepted = 0usize;
+        for target in targets {
+            let mut mail_payload = new.clone();
+            if !target.transport.is_empty() {
+                mail_payload.transport = Some(target.transport.clone());
+            }
+            if let Some(recipients) = target.recipients {
+                mail_payload.to = recipients;
+            }
+
+            if let Err(err) = mail_payload.validate() {
+                tracing::warn!(error = %err, "rejected target of incoming mail");
+                continue;
+            }
+            let mail = Mail::from_new(mail_payload, chrono::Utc::now(), Uuid::new_v4());
+
+            // Block on the durable enqueue; this runs on an SMTP worker thread,
+            // not on the async runtime, so blocking is safe here.
+            match self.ctx.handle.block_on(self.ctx.queue.enqueue(mail)) {
+                Ok(stored) => {
+                    tracing::info!(mail_id = %stored.id, transport = ?target.transport, "mail accepted into queue");
+                    accepted += 1;
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "could not enqueue mail");
                 }
             }
         }
 
-        if let Err(err) = new.validate() {
-            tracing::warn!(error = %err, "rejected incoming mail");
-            return Response::custom(554, format!("rejected: {err}"));
+        if accepted == 0 {
+            return response::INTERNAL_ERROR;
         }
-        let mail = Mail::from_new(new, chrono::Utc::now(), Uuid::new_v4());
-
-        // Block on the durable enqueue; this runs on an SMTP worker thread, not
-        // on the async runtime, so blocking is safe here.
-        match self.ctx.handle.block_on(self.ctx.queue.enqueue(mail)) {
-            Ok(stored) => {
-                tracing::info!(mail_id = %stored.id, "mail accepted into queue");
-                response::OK
-            }
-            Err(err) => {
-                tracing::error!(error = %err, "could not enqueue mail");
-                response::INTERNAL_ERROR
-            }
-        }
+        response::OK
     }
 
     fn auth_plain(
@@ -646,5 +662,36 @@ mod tests {
 
         let due = queue.fetch_due(10, chrono::Utc::now()).await.expect("fetch");
         assert!(due.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn routing_fans_out_to_multiple_transports() {
+        let raw = r#"
+            [ingress.smtp]
+            [security]
+            ip_whitelist = ["127.0.0.1"]
+            [auth.anonymous]
+            enabled = true
+            [routing.senders."alarm@example.com"]
+            targets = [
+                { transport = "teams", recipients = ["ops@teams.local"] },
+                { transport = "ntfy" },
+            ]
+        "#;
+        let config = Arc::new(Config::from_toml_str(raw).expect("config"));
+        let queue = memory_queue().await;
+        let port = start_server(config, queue.clone());
+
+        let code = submit_mail(port, "alarm@example.com", "ignored@example.com", "Alarm").await;
+        assert!(code.starts_with("250"), "expected acceptance, got {code}");
+
+        let mut due = queue.fetch_due(10, chrono::Utc::now()).await.expect("fetch");
+        assert_eq!(due.len(), 2, "one queue entry per target");
+        due.sort_by(|a, b| a.transport.cmp(&b.transport));
+        // ntfy keeps the original recipient; teams overrides it.
+        assert_eq!(due[0].transport.as_deref(), Some("ntfy"));
+        assert_eq!(due[0].to[0].email, "ignored@example.com");
+        assert_eq!(due[1].transport.as_deref(), Some("teams"));
+        assert_eq!(due[1].to[0].email, "ops@teams.local");
     }
 }

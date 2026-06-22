@@ -196,11 +196,23 @@ recipients = ["ops-channel@teams.local"]
 # Refuse a specific sender.
 [routing.senders."noreply@blocked.local"]
 transport = "reject"
+
+# Fan out one sender to several channels at once.
+[routing.senders."alarm@monitoring.local"]
+targets = [
+    { transport = "teams", recipients = ["ops-channel@teams.local"] },
+    { transport = "ntfy" },
+    { transport = "graph", recipients = ["oncall@example.com"] },
+]
 ```
 
 Resolution order: a matching per-sender rule wins over the default; a missing
 rule with no default, or `transport = "reject"`, refuses the message with SMTP
 550 at submission time (nothing is queued).
+
+A rule may instead list `targets` to fan out to several channels. Each target
+becomes its own queue entry, delivered and retried independently, and may
+override the recipients. A `"reject"` target is skipped.
 
 Sender keys and recipient addresses must be valid e-mail addresses with a domain
 part, for example `alerts@teams.local` rather than `alerts@teams`. The sending

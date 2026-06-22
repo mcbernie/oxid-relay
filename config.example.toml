@@ -72,6 +72,16 @@ recipients = ["ops-channel@teams.local"]
 [routing.senders."noreply@blocked.local"]
 transport = "reject"
 
+# Example: fan out one sender to several channels. Each target becomes its own
+# queue entry, delivered and retried independently. A target may override the
+# recipients; a "reject" target is skipped.
+[routing.senders."alarm@monitoring.local"]
+targets = [
+    { transport = "teams", recipients = ["ops-channel@teams.local"] },
+    { transport = "ntfy" },
+    { transport = "graph", recipients = ["oncall@example.com"] },
+]
+
 # Per-plugin settings, keyed by plugin name. Passed to the plugin script as its
 # `config` map. Keys ending in _env are resolved from the named environment
 # variable and exposed under the key without the suffix (e.g. client_secret_env

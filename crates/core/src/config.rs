@@ -179,16 +179,42 @@ pub struct RoutingConfig {
     pub senders: BTreeMap<String, RouteRule>,
 }
 
-/// A single routing rule.
+/// A single routing rule. Either a single `transport` (with optional
+/// `recipients`) or a list of `targets` for fan-out to several channels.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteRule {
-    /// Transport/channel name to use, or `"reject"` to refuse the mail.
-    pub transport: String,
-    /// Optional recipient override. When non-empty, replaces the original
-    /// recipients with these addresses.
+    /// Single transport/channel name, or `"reject"` to refuse the mail.
+    /// Ignored when `targets` is set.
+    #[serde(default)]
+    pub transport: Option<String>,
+    /// Optional recipient override for the single-transport form. When
+    /// non-empty, replaces the original recipients.
     #[serde(default)]
     pub recipients: Vec<String>,
+    /// Fan-out targets. When non-empty, the mail is delivered to every target.
+    #[serde(default)]
+    pub targets: Vec<RouteTargetConfig>,
+}
+
+/// One fan-out target inside a [`RouteRule`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteTargetConfig {
+    /// Transport/channel name. A `"reject"` entry is skipped.
+    pub transport: String,
+    /// Optional recipient override for this target.
+    #[serde(default)]
+    pub recipients: Vec<String>,
+}
+
+/// A resolved delivery target: one transport and optional recipient override.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteTarget {
+    /// Transport/channel name.
+    pub transport: String,
+    /// Replacement recipients, or `None` to keep the original ones.
+    pub recipients: Option<Vec<Address>>,
 }
 
 /// The resolved routing decision for a mail.
@@ -196,13 +222,42 @@ pub struct RouteRule {
 pub enum Route {
     /// Refuse the mail.
     Reject,
-    /// Deliver via the named transport, optionally to overridden recipients.
-    Deliver {
-        /// Transport/channel name.
-        transport: String,
-        /// Replacement recipients, or `None` to keep the original ones.
-        recipients: Option<Vec<Address>>,
-    },
+    /// Deliver to one or more targets.
+    Deliver(Vec<RouteTarget>),
+}
+
+/// Turns recipient strings into an optional address list (`None` if empty).
+fn recipient_override(recipients: &[String]) -> Option<Vec<Address>> {
+    if recipients.is_empty() {
+        None
+    } else {
+        Some(recipients.iter().map(|r| Address::new(r.clone())).collect())
+    }
+}
+
+impl RouteRule {
+    /// Expands the rule into concrete delivery targets, dropping `"reject"`
+    /// entries. An empty result means the rule rejects the mail.
+    fn expand(&self) -> Vec<RouteTarget> {
+        if !self.targets.is_empty() {
+            return self
+                .targets
+                .iter()
+                .filter(|target| !target.transport.eq_ignore_ascii_case("reject"))
+                .map(|target| RouteTarget {
+                    transport: target.transport.clone(),
+                    recipients: recipient_override(&target.recipients),
+                })
+                .collect();
+        }
+        match &self.transport {
+            Some(transport) if !transport.eq_ignore_ascii_case("reject") => vec![RouteTarget {
+                transport: transport.clone(),
+                recipients: recipient_override(&self.recipients),
+            }],
+            _ => Vec::new(),
+        }
+    }
 }
 
 impl RoutingConfig {
@@ -213,22 +268,19 @@ impl RoutingConfig {
     }
 
     /// Resolves the route for a sender address. A per-sender rule wins over the
-    /// default; a missing rule or a `"reject"` transport yields [`Route::Reject`].
+    /// default; a missing rule or a rule with no deliverable target rejects.
     pub fn resolve(&self, sender: &str) -> Route {
         let rule = self.senders.get(sender).or(self.default.as_ref());
         match rule {
-            Some(rule) if !rule.transport.eq_ignore_ascii_case("reject") => {
-                let recipients = if rule.recipients.is_empty() {
-                    None
+            Some(rule) => {
+                let targets = rule.expand();
+                if targets.is_empty() {
+                    Route::Reject
                 } else {
-                    Some(rule.recipients.iter().map(|r| Address::new(r.clone())).collect())
-                };
-                Route::Deliver {
-                    transport: rule.transport.clone(),
-                    recipients,
+                    Route::Deliver(targets)
                 }
             }
-            _ => Route::Reject,
+            None => Route::Reject,
         }
     }
 }
@@ -685,14 +737,36 @@ mod tests {
         let config = Config::from_toml_str(raw).expect("valid config");
         assert!(config.routing.is_active());
         match config.routing.resolve("bla@teams") {
-            Route::Deliver {
-                transport,
-                recipients,
-            } => {
-                assert_eq!(transport, "teams");
-                let recipients = recipients.expect("override");
+            Route::Deliver(targets) => {
+                assert_eq!(targets.len(), 1);
+                assert_eq!(targets[0].transport, "teams");
+                let recipients = targets[0].recipients.as_ref().expect("override");
                 assert_eq!(recipients.len(), 2);
                 assert_eq!(recipients[0].email, "ops-channel@teams");
+            }
+            Route::Reject => panic!("should deliver"),
+        }
+    }
+
+    #[test]
+    fn routing_fans_out_to_multiple_targets() {
+        let raw = r#"
+            [routing.senders."alarm@x"]
+            targets = [
+                { transport = "teams", recipients = ["ops@teams.local"] },
+                { transport = "ntfy" },
+                { transport = "reject" },
+            ]
+        "#;
+        let config = Config::from_toml_str(raw).expect("valid config");
+        match config.routing.resolve("alarm@x") {
+            Route::Deliver(targets) => {
+                // The "reject" entry is dropped.
+                assert_eq!(targets.len(), 2);
+                assert_eq!(targets[0].transport, "teams");
+                assert_eq!(targets[0].recipients.as_ref().unwrap()[0].email, "ops@teams.local");
+                assert_eq!(targets[1].transport, "ntfy");
+                assert!(targets[1].recipients.is_none());
             }
             Route::Reject => panic!("should deliver"),
         }
@@ -711,10 +785,10 @@ mod tests {
         // Unknown sender falls back to default transport.
         assert_eq!(
             config.routing.resolve("anyone@x"),
-            Route::Deliver {
+            Route::Deliver(vec![RouteTarget {
                 transport: "graph".to_string(),
                 recipients: None,
-            }
+            }])
         );
         // Explicit reject rule.
         assert_eq!(config.routing.resolve("blocked@x"), Route::Reject);
