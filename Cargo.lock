@@ -1400,6 +1400,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dotenvy",
  "oxid-relay-core",
  "oxid-relay-dispatcher",
  "oxid-relay-http-api",

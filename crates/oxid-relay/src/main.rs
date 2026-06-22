@@ -28,6 +28,7 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    load_dotenv();
     let cli = Cli::parse();
 
     let config = Arc::new(
@@ -120,6 +121,16 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("OxidRelay stopped");
     Ok(())
+}
+
+/// Loads a local `.env` file in debug builds so secrets are available without
+/// exporting them by hand. No-op in release builds and when no file exists.
+/// Logging is not up yet here, so this reports via stderr.
+fn load_dotenv() {
+    #[cfg(debug_assertions)]
+    if let Ok(path) = dotenvy::dotenv() {
+        eprintln!("loaded environment from {}", path.display());
+    }
 }
 
 /// Builds a SQLite connection URL from the configured database value.
