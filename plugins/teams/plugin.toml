@@ -1,0 +1,6 @@
+name = "teams"
+version = "0.1.0"
+kind = "transport"
+capabilities = ["send"]
+description = "Microsoft Teams delivery via an incoming webhook."
+entry = "script.rhai"

@@ -1,0 +1,6 @@
+name = "ntfy"
+version = "0.1.0"
+kind = "transport"
+capabilities = ["send"]
+description = "Push notification delivery via ntfy (ntfy.sh or self-hosted)."
+entry = "script.rhai"

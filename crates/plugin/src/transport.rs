@@ -102,7 +102,7 @@ impl Transport for RhaiTransport {
 mod tests {
     use super::*;
     use crate::engine::build_engine;
-    use crate::http::{HttpClient, HttpRequest, HttpResponse};
+    use crate::http::{HttpBody, HttpClient, HttpRequest, HttpResponse};
     use crate::loader::load_plugin;
     use oxid_relay_core::{Address, NewMail};
     use std::path::PathBuf;
@@ -214,5 +214,74 @@ mod tests {
 
         let err = transport.send(&sample_mail()).await.expect_err("must fail");
         assert!(matches!(err, CoreError::Transport(_)));
+    }
+
+    fn plugin_dir(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins")
+            .join(name)
+            .canonicalize()
+            .expect("plugin dir exists")
+    }
+
+    fn config_with(pairs: &[(&str, &str)]) -> Map {
+        let mut config = Map::new();
+        for (key, value) in pairs {
+            config.insert((*key).into(), (*value).into());
+        }
+        config
+    }
+
+    #[tokio::test]
+    async fn teams_plugin_posts_to_webhook() {
+        let mock = Arc::new(MockHttp {
+            rules: vec![("teams.example.com".into(), 200, "1".into())],
+            seen: Mutex::new(vec![]),
+        });
+        let engine = build_engine(mock.clone());
+        let plugin = load_plugin(&engine, &plugin_dir("teams")).expect("load teams plugin");
+        assert_eq!(plugin.manifest.name, "teams");
+
+        let config = config_with(&[("webhook_url", "https://teams.example.com/hook/abc")]);
+        let transport = RhaiTransport::new(plugin, Arc::new(engine), config);
+        transport.send(&sample_mail()).await.expect("send");
+
+        let seen = mock.seen.lock().expect("lock");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].method, "POST");
+        assert!(seen[0].url.contains("teams.example.com"));
+        match &seen[0].body {
+            HttpBody::Text(text) => assert!(text.contains("Status")),
+            _ => panic!("expected a text body"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ntfy_plugin_publishes_to_topic() {
+        let mock = Arc::new(MockHttp {
+            rules: vec![("ntfy.example".into(), 200, String::new())],
+            seen: Mutex::new(vec![]),
+        });
+        let engine = build_engine(mock.clone());
+        let plugin = load_plugin(&engine, &plugin_dir("ntfy")).expect("load ntfy plugin");
+        assert_eq!(plugin.manifest.name, "ntfy");
+
+        let config = config_with(&[("server", "https://ntfy.example"), ("topic", "alerts")]);
+        let transport = RhaiTransport::new(plugin, Arc::new(engine), config);
+        transport.send(&sample_mail()).await.expect("send");
+
+        let seen = mock.seen.lock().expect("lock");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].url, "https://ntfy.example/alerts");
+        assert!(
+            seen[0]
+                .headers
+                .iter()
+                .any(|(k, v)| k == "Title" && v == "Status")
+        );
+        match &seen[0].body {
+            HttpBody::Text(text) => assert_eq!(text, "Okay"),
+            _ => panic!("expected a text body"),
+        }
     }
 }

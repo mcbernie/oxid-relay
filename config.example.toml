@@ -54,6 +54,10 @@ enabled = false
 # based on the envelope sender. Only active if at least one rule or a default
 # is set. A rule with transport = "reject" (or an unmatched sender without a
 # default) refuses the mail at submission time.
+#
+# Sender keys and recipient addresses must be valid e-mail addresses with a
+# domain part, e.g. "alerts@teams.local" (not just "alerts@teams"). The sending
+# service must use the same address in its SMTP MAIL FROM for the rule to match.
 [routing]
 # Default for senders without a specific rule. Omit to reject unknown senders.
 [routing.default]
@@ -77,3 +81,15 @@ tenant_id = "00000000-0000-0000-0000-000000000000"
 client_id = "11111111-1111-1111-1111-111111111111"
 client_secret_env = "GRAPH_CLIENT_SECRET"
 sender = "relay@example.com"
+
+# Microsoft Teams via incoming webhook. The webhook URL contains a secret, so
+# store it through an environment variable.
+[plugins.teams]
+webhook_url_env = "TEAMS_WEBHOOK_URL"
+
+# ntfy push notifications. "server" defaults to https://ntfy.sh; "token" is only
+# needed for protected topics.
+[plugins.ntfy]
+topic = "oxidrelay-alerts"
+server = "https://ntfy.sh"
+# token_env = "NTFY_TOKEN"
