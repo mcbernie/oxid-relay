@@ -15,6 +15,8 @@ use std::path::Path;
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::message::Address;
+
 /// Errors that can occur while loading or validating configuration.
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -77,6 +79,9 @@ pub struct Config {
     /// Ingress (incoming mail) settings.
     #[serde(default)]
     pub ingress: IngressConfig,
+    /// Routing rules: channel selection and recipient override by sender.
+    #[serde(default)]
+    pub routing: RoutingConfig,
 }
 
 impl Config {
@@ -158,6 +163,73 @@ impl Config {
             }
         }
         Ok(resolved)
+    }
+}
+
+/// Routing configuration: which channel (transport) handles a mail and an
+/// optional recipient override, decided by the sender address.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutingConfig {
+    /// Action for senders without a specific rule. `None` means reject.
+    #[serde(default)]
+    pub default: Option<RouteRule>,
+    /// Per-sender rules keyed by the envelope sender address.
+    #[serde(default)]
+    pub senders: BTreeMap<String, RouteRule>,
+}
+
+/// A single routing rule.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteRule {
+    /// Transport/channel name to use, or `"reject"` to refuse the mail.
+    pub transport: String,
+    /// Optional recipient override. When non-empty, replaces the original
+    /// recipients with these addresses.
+    #[serde(default)]
+    pub recipients: Vec<String>,
+}
+
+/// The resolved routing decision for a mail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Route {
+    /// Refuse the mail.
+    Reject,
+    /// Deliver via the named transport, optionally to overridden recipients.
+    Deliver {
+        /// Transport/channel name.
+        transport: String,
+        /// Replacement recipients, or `None` to keep the original ones.
+        recipients: Option<Vec<Address>>,
+    },
+}
+
+impl RoutingConfig {
+    /// Whether any routing rule is configured. When inactive, callers keep
+    /// their previous behaviour instead of rejecting everything.
+    pub fn is_active(&self) -> bool {
+        self.default.is_some() || !self.senders.is_empty()
+    }
+
+    /// Resolves the route for a sender address. A per-sender rule wins over the
+    /// default; a missing rule or a `"reject"` transport yields [`Route::Reject`].
+    pub fn resolve(&self, sender: &str) -> Route {
+        let rule = self.senders.get(sender).or(self.default.as_ref());
+        match rule {
+            Some(rule) if !rule.transport.eq_ignore_ascii_case("reject") => {
+                let recipients = if rule.recipients.is_empty() {
+                    None
+                } else {
+                    Some(rule.recipients.iter().map(|r| Address::new(r.clone())).collect())
+                };
+                Route::Deliver {
+                    transport: rule.transport.clone(),
+                    recipients,
+                }
+            }
+            _ => Route::Reject,
+        }
     }
 }
 
@@ -595,6 +667,67 @@ mod tests {
         assert_eq!(config.auth.authenticate("backup", "falsch").expect("auth"), None);
         // Unknown user with self-registration disabled is rejected.
         assert_eq!(config.auth.authenticate("fremd", "x").expect("auth"), None);
+    }
+
+    #[test]
+    fn routing_inactive_when_empty() {
+        let config = Config::from_toml_str("").expect("valid config");
+        assert!(!config.routing.is_active());
+    }
+
+    #[test]
+    fn routing_sender_rule_overrides_recipients_and_transport() {
+        let raw = r#"
+            [routing.senders."bla@teams"]
+            transport = "teams"
+            recipients = ["ops-channel@teams", "oncall@teams"]
+        "#;
+        let config = Config::from_toml_str(raw).expect("valid config");
+        assert!(config.routing.is_active());
+        match config.routing.resolve("bla@teams") {
+            Route::Deliver {
+                transport,
+                recipients,
+            } => {
+                assert_eq!(transport, "teams");
+                let recipients = recipients.expect("override");
+                assert_eq!(recipients.len(), 2);
+                assert_eq!(recipients[0].email, "ops-channel@teams");
+            }
+            Route::Reject => panic!("should deliver"),
+        }
+    }
+
+    #[test]
+    fn routing_default_applies_and_reject_works() {
+        let raw = r#"
+            [routing]
+            [routing.default]
+            transport = "graph"
+            [routing.senders."blocked@x"]
+            transport = "reject"
+        "#;
+        let config = Config::from_toml_str(raw).expect("valid config");
+        // Unknown sender falls back to default transport.
+        assert_eq!(
+            config.routing.resolve("anyone@x"),
+            Route::Deliver {
+                transport: "graph".to_string(),
+                recipients: None,
+            }
+        );
+        // Explicit reject rule.
+        assert_eq!(config.routing.resolve("blocked@x"), Route::Reject);
+    }
+
+    #[test]
+    fn routing_rejects_unknown_sender_without_default() {
+        let raw = r#"
+            [routing.senders."known@x"]
+            transport = "graph"
+        "#;
+        let config = Config::from_toml_str(raw).expect("valid config");
+        assert_eq!(config.routing.resolve("unknown@x"), Route::Reject);
     }
 
     #[test]
