@@ -251,7 +251,12 @@ mod tests {
         assert_eq!(seen[0].method, "POST");
         assert!(seen[0].url.contains("teams.example.com"));
         match &seen[0].body {
-            HttpBody::Text(text) => assert!(text.contains("Status")),
+            HttpBody::Text(text) => {
+                assert!(text.contains("Status"));
+                // Power Automate / Workflows webhooks expect an Adaptive Card.
+                assert!(text.contains("AdaptiveCard"));
+                assert!(text.contains("attachments"));
+            }
             _ => panic!("expected a text body"),
         }
     }
