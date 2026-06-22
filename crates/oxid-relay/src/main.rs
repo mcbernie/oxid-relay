@@ -26,23 +26,52 @@ struct Cli {
     /// Path to the TOML configuration file.
     #[arg(short, long, default_value = "config.toml", env = "OXID_RELAY_CONFIG")]
     config: PathBuf,
+
+    /// Run under the Windows service control manager. Set automatically by the
+    /// installed service; not meant for interactive use.
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    service: bool,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     load_dotenv();
     let cli = Cli::parse();
 
+    #[cfg(windows)]
+    if cli.service {
+        return windows_service_runner::run(cli.config);
+    }
+
+    run_foreground(cli.config)
+}
+
+/// Runs the relay in the foreground (console, systemd or launchd), stopping on
+/// SIGINT or, on Unix, SIGTERM.
+fn run_foreground(config_path: PathBuf) -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("building async runtime")?;
+    runtime.block_on(run_relay(config_path, shutdown_signal()))
+}
+
+/// Loads the configuration and runs the full relay (queue, transports, ingress
+/// and dispatcher) until the `shutdown` future resolves.
+async fn run_relay(
+    config_path: PathBuf,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> anyhow::Result<()> {
     let config = Arc::new(
-        Config::load(&cli.config)
-            .with_context(|| format!("loading config from {}", cli.config.display()))?,
+        Config::load(&config_path)
+            .with_context(|| format!("loading config from {}", config_path.display()))?,
     );
 
     oxid_relay_logging::init(&config.logging.level)
         .map_err(|err| anyhow::anyhow!("initialising logging: {err}"))?;
 
     tracing::info!(
-        config = %cli.config.display(),
+        config = %config_path.display(),
         queue = %config.queue.database,
         log_level = %config.logging.level,
         "OxidRelay started"
@@ -117,8 +146,8 @@ async fn main() -> anyhow::Result<()> {
         default_transport,
         dispatcher_config(&config),
     );
-    tracing::info!("dispatcher running, send SIGINT or SIGTERM to stop");
-    dispatcher.run(shutdown_signal()).await;
+    tracing::info!("dispatcher running");
+    dispatcher.run(shutdown).await;
 
     tracing::info!("OxidRelay stopped");
     Ok(())
@@ -245,4 +274,109 @@ fn build_plugin_transports(config: &Config) -> Vec<(String, Arc<dyn Transport>)>
         }
     }
     transports
+}
+
+/// Windows service integration: runs the relay under the service control
+/// manager, reporting status and stopping cleanly on a Stop/Shutdown control.
+#[cfg(windows)]
+mod windows_service_runner {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use windows_service::service::{
+        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
+        ServiceType,
+    };
+    use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+    use windows_service::{define_windows_service, service_dispatcher};
+
+    const SERVICE_NAME: &str = "oxid-relay";
+    const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
+
+    // The service entry point has a fixed signature, so the config path is
+    // stashed here before the dispatcher takes over.
+    static CONFIG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+    define_windows_service!(ffi_service_main, service_main);
+
+    /// Hands control to the service control manager. Returns once the service
+    /// has stopped.
+    pub fn run(config_path: PathBuf) -> anyhow::Result<()> {
+        let _ = CONFIG_PATH.set(config_path);
+        service_dispatcher::start(SERVICE_NAME, ffi_service_main)
+            .map_err(|err| anyhow::anyhow!("starting service dispatcher: {err}"))?;
+        Ok(())
+    }
+
+    fn service_main(_arguments: Vec<OsString>) {
+        if let Err(err) = run_service() {
+            // A subscriber may not be installed yet; fall back to stderr.
+            eprintln!("oxid-relay service error: {err}");
+        }
+    }
+
+    fn run_service() -> anyhow::Result<()> {
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+
+        let event_handler = move |control| -> ServiceControlHandlerResult {
+            match control {
+                ServiceControl::Stop | ServiceControl::Shutdown => {
+                    let _ = shutdown_tx.send(());
+                    ServiceControlHandlerResult::NoError
+                }
+                ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+                _ => ServiceControlHandlerResult::NotImplemented,
+            }
+        };
+
+        let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)
+            .map_err(|err| anyhow::anyhow!("registering control handler: {err}"))?;
+
+        status_handle
+            .set_service_status(status(
+                ServiceState::Running,
+                ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+            ))
+            .map_err(|err| anyhow::anyhow!("setting running status: {err}"))?;
+
+        let config_path = CONFIG_PATH
+            .get()
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from("config.toml"));
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| anyhow::anyhow!("building async runtime: {err}"))?;
+
+        // Bridge the synchronous control handler into an async shutdown future.
+        let shutdown = async move {
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = shutdown_rx.recv();
+            })
+            .await;
+        };
+
+        let result = runtime.block_on(super::run_relay(config_path, shutdown));
+
+        let _ = status_handle
+            .set_service_status(status(ServiceState::Stopped, ServiceControlAccept::empty()));
+        result
+    }
+
+    /// Builds a service status with no pending-state fields set.
+    fn status(state: ServiceState, controls: ServiceControlAccept) -> ServiceStatus {
+        ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: state,
+            controls_accepted: controls,
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        }
+    }
 }

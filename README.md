@@ -121,7 +121,21 @@ sudo launchctl load /Library/LaunchDaemons/com.oxid-relay.plist
 
 ### Windows
 
-A Windows service wrapper and an MSI installer are planned (see the roadmap).
+The binary runs as a Windows service when started with `--service` (the service
+control manager passes this). An install script is in
+`packaging/windows/install-service.ps1`. From an elevated PowerShell, after
+adjusting the paths inside it:
+
+```
+powershell -ExecutionPolicy Bypass -File packaging\windows\install-service.ps1
+```
+
+It registers the service with `binPath` pointing at the executable plus
+`--service --config <path>`. Secrets are read from machine-level environment
+variables (release builds do not load `.env`); set them with
+`[Environment]::SetEnvironmentVariable(name, value, 'Machine')` and restart the
+service. Note that service stdout is not captured yet; Windows Event Log / file
+logging is planned. An MSI installer (cargo-wix) is also planned.
 
 ## Configuration
 
@@ -441,15 +455,17 @@ Not yet implemented:
 Available:
 
 - Single-instance lock on the queue, clean shutdown on SIGINT/SIGTERM, and
-  service files for Linux (systemd) and macOS (launchd).
+  service integration for Linux (systemd), macOS (launchd) and Windows (service
+  control manager).
 - Dispatcher tuning via configuration (concurrency, poll interval, retry
   backoff, attempt limit).
+- GitHub Actions CI building and testing on Linux, macOS and Windows.
 
 Planned:
 
 - STARTTLS plus AUTH LOGIN/PLAIN for the ingress.
-- Windows service wrapper and an MSI installer (cargo-wix).
-- GitHub Actions workflows for build, test, lint, and releases.
+- MSI installer (cargo-wix) and Windows Event Log / file logging.
+- GitHub Actions release workflow (binaries, installers).
 - Additional transports and providers (for example Mailgun, Amazon SES, SMS).
 
 All of this is still to come. Contributions and issues are welcome.
