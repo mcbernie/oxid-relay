@@ -341,6 +341,41 @@ To use it: drop the directory into a plugin path, add a `[plugins.myplugin]`
 section with its settings, and route a sender to it with
 `transport = "myplugin"`.
 
+## Status and roadmap
+
+OxidRelay is under heavy development and is not production ready. Expect changes.
+
+Tested so far:
+
+- SMTP ingress (anonymous, IP whitelist), the queue, the parallel dispatcher with
+  retry, routing, the subject prefix, and the plugin system (graph, teams, ntfy)
+  are covered by automated tests.
+- Only macOS has been used so far. Linux and Windows builds and behaviour are not
+  yet verified.
+
+Not yet tested:
+
+- The outbound SMTP transport is implemented but has not been tested against a
+  real SMTP server.
+
+Not yet implemented:
+
+- SMTP ingress authentication (AUTH LOGIN/PLAIN) and STARTTLS. Submission is
+  currently anonymous, protected only by the IP whitelist. The auth logic
+  (modes B1/B2) is prepared but not wired up.
+
+Planned:
+
+- STARTTLS plus AUTH LOGIN/PLAIN for the ingress.
+- Dispatcher tuning via configuration (concurrency, poll interval, retry
+  backoff, attempt limit).
+- Platform service integration: systemd unit, Windows service, MSI installer
+  (cargo-wix).
+- GitHub Actions workflows for build, test, lint, and releases.
+- Additional transports and providers (for example Mailgun, Amazon SES, SMS).
+
+All of this is still to come. Contributions and issues are welcome.
+
 ## License
 
 MIT or Apache-2.0.
