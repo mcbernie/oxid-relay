@@ -1,0 +1,23 @@
+[package]
+name = "oxid-relay-plugin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+oxid-relay-core.workspace = true
+async-trait.workspace = true
+rhai.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
+chrono.workspace = true

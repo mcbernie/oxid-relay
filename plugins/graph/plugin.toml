@@ -1,0 +1,6 @@
+name = "graph"
+version = "0.1.0"
+kind = "transport"
+capabilities = ["send"]
+description = "Microsoft 365 mail delivery via the Microsoft Graph API (sendMail)."
+entry = "script.rhai"
