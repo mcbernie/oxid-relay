@@ -6,12 +6,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
 use fs4::FileExt;
 use oxid_relay_core::{Config, Queue, Transport};
-use oxid_relay_dispatcher::{Dispatcher, DispatcherConfig};
+use oxid_relay_dispatcher::{Dispatcher, DispatcherConfig, RetryPolicy};
 use oxid_relay_plugin::{
     ReqwestClient, RhaiTransport, build_engine, discover, plugin_dirs, string_config_map,
 };
@@ -109,12 +110,12 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Background dispatcher; runs until Ctrl-C.
+    // Background dispatcher; runs until shutdown.
     let dispatcher = Dispatcher::new(
         queue,
         transports,
         default_transport,
-        DispatcherConfig::default(),
+        dispatcher_config(&config),
     );
     tracing::info!("dispatcher running, send SIGINT or SIGTERM to stop");
     dispatcher.run(shutdown_signal()).await;
@@ -130,6 +131,22 @@ fn load_dotenv() {
     #[cfg(debug_assertions)]
     if let Ok(path) = dotenvy::dotenv() {
         eprintln!("loaded environment from {}", path.display());
+    }
+}
+
+/// Maps the configured dispatcher settings into the dispatcher's config type.
+fn dispatcher_config(config: &Config) -> DispatcherConfig {
+    let settings = &config.dispatcher;
+    DispatcherConfig {
+        batch_size: settings.batch_size,
+        concurrency: settings.concurrency,
+        poll_interval: Duration::from_secs(settings.poll_interval_secs),
+        sending_lease: Duration::from_secs(settings.sending_lease_secs),
+        retry: RetryPolicy {
+            max_attempts: settings.max_attempts,
+            base_delay: Duration::from_secs(settings.retry_base_secs),
+            max_delay: Duration::from_secs(settings.retry_max_secs),
+        },
     }
 }
 

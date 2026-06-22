@@ -12,6 +12,17 @@ password_env = "MAIL_PASSWORD"
 [queue]
 database = "queue.db"
 
+# Dispatcher tuning. All values shown are the defaults; omit the section to use
+# them. Times are in seconds.
+[dispatcher]
+batch_size = 64          # mails fetched per poll
+concurrency = 8          # parallel deliveries
+poll_interval_secs = 5   # delay between polls
+sending_lease_secs = 120 # in-flight mail older than this is retried (self-heal)
+max_attempts = 5         # attempts before a mail is buried as dead
+retry_base_secs = 30     # first retry delay (exponential backoff)
+retry_max_secs = 3600    # backoff cap
+
 # SMTP ingress: the relay accepts mail on the LAN. Presence of this section
 # enables it. v1 accepts anonymous submission (mode A); enable [auth.anonymous]
 # below. AUTH LOGIN/PLAIN requires STARTTLS and arrives in a later step.

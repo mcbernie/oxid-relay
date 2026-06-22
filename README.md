@@ -146,6 +146,22 @@ level = "info"   # trace, debug, info, warn, error
 
 `RUST_LOG` overrides this when set.
 
+### Dispatcher
+
+Tuning for the background delivery loop. All values are optional and default as
+shown; times are in seconds.
+
+```toml
+[dispatcher]
+batch_size = 64          # mails fetched per poll
+concurrency = 8          # parallel deliveries
+poll_interval_secs = 5   # delay between polls
+sending_lease_secs = 120 # in-flight mail older than this is retried (self-heal)
+max_attempts = 5         # attempts before a mail is buried as dead
+retry_base_secs = 30     # first retry delay (exponential backoff)
+retry_max_secs = 3600    # backoff cap
+```
+
 ### Outgoing default transport
 
 ```toml
@@ -426,12 +442,12 @@ Available:
 
 - Single-instance lock on the queue, clean shutdown on SIGINT/SIGTERM, and
   service files for Linux (systemd) and macOS (launchd).
+- Dispatcher tuning via configuration (concurrency, poll interval, retry
+  backoff, attempt limit).
 
 Planned:
 
 - STARTTLS plus AUTH LOGIN/PLAIN for the ingress.
-- Dispatcher tuning via configuration (concurrency, poll interval, retry
-  backoff, attempt limit).
 - Windows service wrapper and an MSI installer (cargo-wix).
 - GitHub Actions workflows for build, test, lint, and releases.
 - Additional transports and providers (for example Mailgun, Amazon SES, SMS).

@@ -82,6 +82,9 @@ pub struct Config {
     /// Routing rules: channel selection and recipient override by sender.
     #[serde(default)]
     pub routing: RoutingConfig,
+    /// Dispatcher tuning (concurrency, polling, retry).
+    #[serde(default)]
+    pub dispatcher: DispatcherSettings,
 }
 
 impl Config {
@@ -125,6 +128,22 @@ impl Config {
             }
         }
 
+        // Dispatcher knobs must be positive; zero values would stall delivery.
+        if self.dispatcher.batch_size == 0 {
+            return Err(ConfigError::Invalid("dispatcher.batch_size must be >= 1".into()));
+        }
+        if self.dispatcher.concurrency == 0 {
+            return Err(ConfigError::Invalid("dispatcher.concurrency must be >= 1".into()));
+        }
+        if self.dispatcher.poll_interval_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "dispatcher.poll_interval_secs must be >= 1".into(),
+            ));
+        }
+        if self.dispatcher.max_attempts == 0 {
+            return Err(ConfigError::Invalid("dispatcher.max_attempts must be >= 1".into()));
+        }
+
         // Every subject format must keep the original subject somewhere.
         if !self.subject.format.contains("%original%") {
             return Err(ConfigError::Invalid(
@@ -164,6 +183,70 @@ impl Config {
         }
         Ok(resolved)
     }
+}
+
+/// Dispatcher tuning. Times are in seconds. Mirrors the dispatcher's runtime
+/// knobs; the binary maps this into the dispatcher's own config type.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DispatcherSettings {
+    /// Maximum mails fetched per polling tick.
+    #[serde(default = "default_batch_size")]
+    pub batch_size: u32,
+    /// Maximum mails delivered concurrently.
+    #[serde(default = "default_concurrency")]
+    pub concurrency: usize,
+    /// Delay between polling ticks, in seconds.
+    #[serde(default = "default_poll_secs")]
+    pub poll_interval_secs: u64,
+    /// Time after which an in-flight mail is treated as orphaned, in seconds.
+    #[serde(default = "default_lease_secs")]
+    pub sending_lease_secs: u64,
+    /// Maximum delivery attempts before a mail is buried as dead.
+    #[serde(default = "default_max_attempts")]
+    pub max_attempts: u32,
+    /// Base retry delay, in seconds.
+    #[serde(default = "default_retry_base_secs")]
+    pub retry_base_secs: u64,
+    /// Maximum retry delay (backoff cap), in seconds.
+    #[serde(default = "default_retry_max_secs")]
+    pub retry_max_secs: u64,
+}
+
+impl Default for DispatcherSettings {
+    fn default() -> Self {
+        Self {
+            batch_size: default_batch_size(),
+            concurrency: default_concurrency(),
+            poll_interval_secs: default_poll_secs(),
+            sending_lease_secs: default_lease_secs(),
+            max_attempts: default_max_attempts(),
+            retry_base_secs: default_retry_base_secs(),
+            retry_max_secs: default_retry_max_secs(),
+        }
+    }
+}
+
+fn default_batch_size() -> u32 {
+    64
+}
+fn default_concurrency() -> usize {
+    8
+}
+fn default_poll_secs() -> u64 {
+    5
+}
+fn default_lease_secs() -> u64 {
+    120
+}
+fn default_max_attempts() -> u32 {
+    5
+}
+fn default_retry_base_secs() -> u64 {
+    30
+}
+fn default_retry_max_secs() -> u64 {
+    3600
 }
 
 /// Routing configuration: which channel (transport) handles a mail and an
@@ -802,6 +885,38 @@ mod tests {
         "#;
         let config = Config::from_toml_str(raw).expect("valid config");
         assert_eq!(config.routing.resolve("unknown@x"), Route::Reject);
+    }
+
+    #[test]
+    fn dispatcher_defaults_and_overrides() {
+        let config = Config::from_toml_str("").expect("valid config");
+        assert_eq!(config.dispatcher.concurrency, 8);
+        assert_eq!(config.dispatcher.max_attempts, 5);
+
+        let raw = r#"
+            [dispatcher]
+            concurrency = 16
+            poll_interval_secs = 2
+            max_attempts = 3
+        "#;
+        let config = Config::from_toml_str(raw).expect("valid config");
+        assert_eq!(config.dispatcher.concurrency, 16);
+        assert_eq!(config.dispatcher.poll_interval_secs, 2);
+        assert_eq!(config.dispatcher.max_attempts, 3);
+        // Untouched fields keep their defaults.
+        assert_eq!(config.dispatcher.batch_size, 64);
+    }
+
+    #[test]
+    fn dispatcher_rejects_zero_concurrency() {
+        let raw = r#"
+            [dispatcher]
+            concurrency = 0
+        "#;
+        assert!(matches!(
+            Config::from_toml_str(raw),
+            Err(ConfigError::Invalid(_))
+        ));
     }
 
     #[test]
