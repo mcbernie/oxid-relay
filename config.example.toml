@@ -12,6 +12,13 @@ password_env = "MAIL_PASSWORD"
 [queue]
 database = "queue.db"
 
+# SMTP ingress: the relay accepts mail on the LAN. Presence of this section
+# enables it. v1 accepts anonymous submission (mode A); enable [auth.anonymous]
+# below. AUTH LOGIN/PLAIN requires STARTTLS and arrives in a later step.
+[ingress.smtp]
+bind = "127.0.0.1:2525"
+hostname = "oxid-relay"
+
 [logging]
 # One of: trace, debug, info, warn, error
 level = "info"

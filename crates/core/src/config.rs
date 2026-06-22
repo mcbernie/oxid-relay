@@ -74,6 +74,9 @@ pub struct Config {
     /// string key/value pairs passed to the plugin script as its `config` map.
     #[serde(default)]
     pub plugins: BTreeMap<String, BTreeMap<String, String>>,
+    /// Ingress (incoming mail) settings.
+    #[serde(default)]
+    pub ingress: IngressConfig,
 }
 
 impl Config {
@@ -156,6 +159,34 @@ impl Config {
         }
         Ok(resolved)
     }
+}
+
+/// Ingress (incoming mail) settings.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IngressConfig {
+    /// SMTP listener, if enabled. Presence of this section enables it.
+    pub smtp: Option<SmtpIngressConfig>,
+}
+
+/// SMTP listener settings. The relay acts as an SMTP server on the LAN.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SmtpIngressConfig {
+    /// Socket address to listen on, e.g. `127.0.0.1:2525`.
+    #[serde(default = "default_ingress_bind")]
+    pub bind: String,
+    /// Hostname announced in the SMTP greeting banner.
+    #[serde(default = "default_ingress_hostname")]
+    pub hostname: String,
+}
+
+fn default_ingress_bind() -> String {
+    "127.0.0.1:2525".to_string()
+}
+
+fn default_ingress_hostname() -> String {
+    "oxid-relay".to_string()
 }
 
 /// Mail transport settings.
@@ -266,6 +297,14 @@ impl SubjectConfig {
             .map(|s| s.format.as_str())
             .unwrap_or(&self.format)
     }
+
+    /// Renders the prefixed subject for a sender by substituting the
+    /// placeholders `%name%` and `%original%` in the effective format.
+    pub fn render(&self, sender: &str, original: &str) -> String {
+        self.format_for(sender)
+            .replace("%name%", sender)
+            .replace("%original%", original)
+    }
 }
 
 /// Per-sender subject format override.
@@ -299,6 +338,32 @@ pub struct AuthConfig {
     /// Self-registration from supplied credentials (mode B2).
     #[serde(default)]
     pub self_register: SelfRegisterAuth,
+}
+
+impl AuthConfig {
+    /// Authenticates an incoming sender by username and password.
+    ///
+    /// Returns the resolved sender name on success, `None` on rejection:
+    /// - Mode B1: a configured service whose username and password match
+    ///   yields its key as the sender name.
+    /// - Mode B2: if self-registration is enabled and no service matched, any
+    ///   credentials are accepted and the username becomes the sender name.
+    pub fn authenticate(&self, username: &str, password: &str) -> ConfigResult<Option<String>> {
+        for (name, service) in &self.services {
+            if service.username == username {
+                // Username matched: password must match, otherwise reject.
+                return if service.password()? == password {
+                    Ok(Some(name.clone()))
+                } else {
+                    Ok(None)
+                };
+            }
+        }
+        if self.self_register.enabled {
+            return Ok(Some(username.to_string()));
+        }
+        Ok(None)
+    }
 }
 
 /// Anonymous mode settings (mode A).
@@ -482,6 +547,61 @@ mod tests {
         let settings = config.plugin_settings("graph").expect("settings");
         assert_eq!(settings.get("tenant_id").map(String::as_str), Some("tenant-123"));
         assert_eq!(settings.get("client_secret").map(String::as_str), Some("s3cr3t"));
+    }
+
+    #[test]
+    fn subject_render_substitutes_placeholders() {
+        let config = Config::from_toml_str("").expect("valid config");
+        assert_eq!(
+            config.subject.render("Server01", "Status Okay"),
+            "[Abs: Server01] Status Okay"
+        );
+    }
+
+    #[test]
+    fn authenticate_self_register_accepts_any() {
+        let raw = r#"
+            [auth.self_register]
+            enabled = true
+        "#;
+        let config = Config::from_toml_str(raw).expect("valid config");
+        assert_eq!(
+            config.auth.authenticate("monitoring", "whatever").expect("auth"),
+            Some("monitoring".to_string())
+        );
+    }
+
+    #[test]
+    fn authenticate_service_matches_name_and_password() {
+        let raw = r#"
+            [auth.services."backup-host"]
+            username = "backup"
+            password_env = "OXID_TEST_BACKUP_PW"
+        "#;
+        let config = Config::from_toml_str(raw).expect("valid config");
+        // SAFETY: test-only, uniquely named variable.
+        unsafe {
+            std::env::set_var("OXID_TEST_BACKUP_PW", "geheim");
+        }
+        assert_eq!(
+            config.auth.authenticate("backup", "geheim").expect("auth"),
+            Some("backup-host".to_string())
+        );
+        // Wrong password is rejected.
+        assert_eq!(config.auth.authenticate("backup", "falsch").expect("auth"), None);
+        // Unknown user with self-registration disabled is rejected.
+        assert_eq!(config.auth.authenticate("fremd", "x").expect("auth"), None);
+    }
+
+    #[test]
+    fn ingress_smtp_defaults_when_section_present() {
+        let raw = r#"
+            [ingress.smtp]
+        "#;
+        let config = Config::from_toml_str(raw).expect("valid config");
+        let smtp = config.ingress.smtp.expect("smtp ingress");
+        assert_eq!(smtp.bind, "127.0.0.1:2525");
+        assert_eq!(smtp.hostname, "oxid-relay");
     }
 
     #[test]
