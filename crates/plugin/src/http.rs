@@ -44,27 +44,29 @@ pub trait HttpClient: Send + Sync {
 
 /// Default [`HttpClient`] backed by a blocking `reqwest` client.
 ///
-/// Used inside `spawn_blocking`, never on an async runtime thread.
-pub struct ReqwestClient {
-    client: reqwest::blocking::Client,
-}
+/// The blocking client is built per request so that its internal runtime is
+/// created and dropped on the calling (blocking) thread. Requests only run
+/// inside `spawn_blocking`, never on an async runtime thread.
+#[derive(Default)]
+pub struct ReqwestClient;
 
 impl ReqwestClient {
-    /// Builds a new blocking HTTP client.
+    /// Creates a new client handle. Holds no resources itself.
     pub fn new() -> Result<Self, String> {
-        let client = reqwest::blocking::Client::builder()
-            .build()
-            .map_err(|err| err.to_string())?;
-        Ok(Self { client })
+        Ok(Self)
     }
 }
 
 impl HttpClient for ReqwestClient {
     fn execute(&self, request: HttpRequest) -> Result<HttpResponse, String> {
+        let client = reqwest::blocking::Client::builder()
+            .build()
+            .map_err(|err| err.to_string())?;
+
         let method = reqwest::Method::from_bytes(request.method.as_bytes())
             .map_err(|err| format!("invalid HTTP method: {err}"))?;
 
-        let mut builder = self.client.request(method, &request.url);
+        let mut builder = client.request(method, &request.url);
         for (key, value) in &request.headers {
             builder = builder.header(key, value);
         }

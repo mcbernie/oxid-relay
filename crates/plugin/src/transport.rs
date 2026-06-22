@@ -9,6 +9,19 @@ use rhai::{AST, Dynamic, Engine, Map, Scope};
 use crate::loader::Plugin;
 use crate::manifest::Manifest;
 
+/// Builds the `config` map handed to a plugin script from string key/value
+/// pairs (typically resolved plugin settings from the configuration).
+pub fn string_config_map<I>(pairs: I) -> Map
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    let mut map = Map::new();
+    for (key, value) in pairs {
+        map.insert(key.into(), value.into());
+    }
+    map
+}
+
 /// A transport whose behaviour comes from a Rhai plugin script.
 ///
 /// The script must define `fn send(mail, config)`. Delivery runs on a blocking

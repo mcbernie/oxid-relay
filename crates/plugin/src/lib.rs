@@ -23,4 +23,4 @@ pub use error::PluginError;
 pub use http::{HttpBody, HttpClient, HttpRequest, HttpResponse, ReqwestClient};
 pub use loader::{Plugin, discover, load_plugin, plugin_dirs};
 pub use manifest::Manifest;
-pub use transport::RhaiTransport;
+pub use transport::{RhaiTransport, string_config_map};
