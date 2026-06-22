@@ -1,0 +1,16 @@
+[package]
+name = "oxid-relay-queue-sqlite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+oxid-relay-core.workspace = true
+async-trait.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true

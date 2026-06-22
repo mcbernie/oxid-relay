@@ -1,0 +1,75 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/oxid-relay",
+    "crates/core",
+    "crates/transport-smtp",
+    "crates/queue-sqlite",
+    "crates/http-api",
+    "crates/logging",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["zweiund40"]
+repository = ""
+
+[workspace.dependencies]
+# Internal crates
+oxid-relay-core = { path = "crates/core" }
+oxid-relay-transport-smtp = { path = "crates/transport-smtp" }
+oxid-relay-queue-sqlite = { path = "crates/queue-sqlite" }
+oxid-relay-http-api = { path = "crates/http-api" }
+oxid-relay-logging = { path = "crates/logging" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# HTTP API
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+
+# Mail
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport",
+    "tokio1-rustls-tls",
+    "builder",
+] }
+
+# Configuration
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Persistence
+sqlx = { version = "0.8", features = [
+    "runtime-tokio-rustls",
+    "sqlite",
+    "chrono",
+    "uuid",
+] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Misc
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

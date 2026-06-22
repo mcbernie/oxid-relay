@@ -1,0 +1,14 @@
+[package]
+name = "oxid-relay-transport-smtp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+oxid-relay-core.workspace = true
+async-trait.workspace = true
+lettre.workspace = true
+tokio.workspace = true
+tracing.workspace = true
