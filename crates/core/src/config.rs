@@ -465,12 +465,29 @@ pub struct LoggingConfig {
     /// Log level: trace, debug, info, warn or error.
     #[serde(default = "default_level")]
     pub level: String,
+    /// Colour output: auto, always or never.
+    #[serde(default)]
+    pub color: ColorMode,
+}
+
+/// When to colourise log output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorMode {
+    /// Colour only on a capable interactive terminal, honouring `NO_COLOR`.
+    #[default]
+    Auto,
+    /// Always emit colour codes.
+    Always,
+    /// Never emit colour codes.
+    Never,
 }
 
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             level: default_level(),
+            color: ColorMode::default(),
         }
     }
 }
@@ -628,10 +645,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_log_color_modes() {
+        let config = Config::from_toml_str("[logging]\ncolor = \"never\"").unwrap();
+        assert_eq!(config.logging.color, ColorMode::Never);
+        assert!(Config::from_toml_str("[logging]\ncolor = \"rainbow\"").is_err());
+    }
+
+    #[test]
     fn empty_config_uses_defaults() {
         let config = Config::from_toml_str("").expect("empty config is valid");
         assert_eq!(config.queue.database, "queue.db");
         assert_eq!(config.logging.level, "info");
+        assert_eq!(config.logging.color, ColorMode::Auto);
         assert_eq!(config.subject.format, "[Abs: %name%] %original%");
         assert!(config.mail.smtp.is_none());
         assert!(config.security.ip_whitelist.is_empty());

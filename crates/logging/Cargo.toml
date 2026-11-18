@@ -8,6 +8,10 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+oxid-relay-core.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+enable-ansi-support.workspace = true

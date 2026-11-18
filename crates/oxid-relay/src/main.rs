@@ -67,7 +67,7 @@ async fn run_relay(
             .with_context(|| format!("loading config from {}", config_path.display()))?,
     );
 
-    oxid_relay_logging::init(&config.logging.level)
+    oxid_relay_logging::init(&config.logging.level, config.logging.color)
         .map_err(|err| anyhow::anyhow!("initialising logging: {err}"))?;
 
     tracing::info!(

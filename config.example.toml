@@ -33,6 +33,9 @@ hostname = "oxid-relay"
 [logging]
 # One of: trace, debug, info, warn, error
 level = "info"
+# One of: auto, always, never. "auto" colours only on a capable terminal and
+# honours NO_COLOR / CLICOLOR_FORCE.
+color = "auto"
 
 [subject]
 # Placeholders: %name% (sender identity), %original% (incoming subject).
