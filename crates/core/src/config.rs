@@ -9,7 +9,7 @@
 //! only holds the name of an environment variable; the value is resolved on
 //! demand via the corresponding `password()` helper.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -373,6 +373,18 @@ impl RoutingConfig {
             }
             None => Route::Reject,
         }
+    }
+
+    /// Every transport name the routing config can send mail to: the default
+    /// rule, all per-sender rules and all fan-out targets. The special
+    /// `"reject"` value is not a transport and is left out.
+    pub fn referenced_transports(&self) -> BTreeSet<String> {
+        self.default
+            .iter()
+            .chain(self.senders.values())
+            .flat_map(RouteRule::expand)
+            .map(|target| target.transport)
+            .collect()
     }
 }
 
@@ -923,6 +935,34 @@ mod tests {
         );
         // Explicit reject rule.
         assert_eq!(config.routing.resolve("blocked@x"), Route::Reject);
+    }
+
+    #[test]
+    fn referenced_transports_collects_all_rules_without_reject() {
+        let config = Config::from_toml_str(
+            r#"
+            [routing.default]
+            transport = "graph"
+            [routing.senders."a@x"]
+            transport = "teams"
+            [routing.senders."b@x"]
+            targets = [
+                { transport = "ntfy" },
+                { transport = "graph" },
+                { transport = "reject" },
+            ]
+            [routing.senders."c@x"]
+            transport = "reject"
+            "#,
+        )
+        .expect("config");
+        let names: Vec<String> = config.routing.referenced_transports().into_iter().collect();
+        assert_eq!(names, ["graph", "ntfy", "teams"]);
+    }
+
+    #[test]
+    fn referenced_transports_empty_without_routing() {
+        assert!(Config::default().routing.referenced_transports().is_empty());
     }
 
     #[test]

@@ -15,12 +15,17 @@ use std::sync::Arc;
 use ipnet::IpNet;
 use mail_parser::MessageParser;
 use mailin_embedded::{Handler, Response, Server, SslConfig, response};
-use oxid_relay_core::config::{AuthConfig, Route, RouteTarget, RoutingConfig, SubjectConfig};
+use oxid_relay_core::config::{AuthConfig, RoutingConfig, SubjectConfig};
 use oxid_relay_core::{Address, Config, CoreError, Mail, NewMail, Queue};
 use regex::Regex;
 use thiserror::Error;
 use tokio::runtime::Handle;
 use uuid::Uuid;
+
+mod routing;
+
+pub use routing::TransportAvailability;
+use routing::{Plan, plan};
 
 /// Errors that can occur while starting or running the SMTP ingress.
 #[derive(Debug, Error)]
@@ -51,6 +56,9 @@ struct Context {
     subject_matcher: Option<Regex>,
     /// Channel/recipient routing by sender.
     routing: RoutingConfig,
+    /// Transports that exist in the running relay; mail routed to a missing
+    /// one is answered with a temporary failure instead of being enqueued.
+    availability: TransportAvailability,
 }
 
 /// Per-connection SMTP handler. Cloned by the server for each session, so the
@@ -187,23 +195,26 @@ impl Handler for RelayHandler {
             }
         };
 
-        // Apply routing: build the list of delivery targets (transport plus an
-        // optional recipient override), or reject the sender outright. Without
-        // active routing, a single delivery keeps the original recipients and
-        // lets the dispatcher pick the default transport.
-        let targets: Vec<RouteTarget> = if self.ctx.routing.is_active() {
-            match self.ctx.routing.resolve(&new.from.email) {
-                Route::Reject => {
-                    tracing::info!(from = %new.from.email, "mail rejected by routing policy");
-                    return Response::custom(550, "sender not permitted".to_string());
-                }
-                Route::Deliver(targets) => targets,
+        // Apply routing. A reject is permanent (550). A target whose transport
+        // is not available (e.g. its plugin was skipped at startup) is a
+        // temporary failure (451) so the sender retries once the operator has
+        // fixed the config; for fan-out a single missing target defers the
+        // whole mail so nothing is half-delivered.
+        let targets = match plan(&self.ctx.routing, &self.ctx.availability, &new.from.email) {
+            Plan::Reject => {
+                tracing::info!(from = %new.from.email, "mail rejected by routing policy");
+                return Response::custom(550, "sender not permitted".to_string());
             }
-        } else {
-            vec![RouteTarget {
-                transport: String::new(),
-                recipients: None,
-            }]
+            Plan::Unavailable(transport) => {
+                tracing::warn!(
+                    from = %new.from.email,
+                    subject = %new.subject,
+                    %transport,
+                    "mail deferred: transport unavailable"
+                );
+                return Response::custom(451, "4.3.0 transport unavailable".to_string());
+            }
+            Plan::Deliver(targets) => targets,
         };
 
         // Enqueue one mail per target. Each becomes an independent queue entry
@@ -312,7 +323,12 @@ fn compile_matcher(pattern: Option<&String>) -> Option<Regex> {
 }
 
 /// Builds the shared context from the configuration.
-fn context(config: &Config, queue: Arc<dyn Queue>, handle: Handle) -> Arc<Context> {
+fn context(
+    config: &Config,
+    queue: Arc<dyn Queue>,
+    handle: Handle,
+    availability: TransportAvailability,
+) -> Arc<Context> {
     Arc::new(Context {
         queue,
         handle,
@@ -322,6 +338,7 @@ fn context(config: &Config, queue: Arc<dyn Queue>, handle: Handle) -> Arc<Contex
         subject: config.subject.clone(),
         subject_matcher: compile_matcher(config.auth.anonymous.subject_match.as_ref()),
         routing: config.routing.clone(),
+        availability,
     })
 }
 
@@ -348,9 +365,10 @@ pub fn serve(
     config: Arc<Config>,
     queue: Arc<dyn Queue>,
     handle: Handle,
+    availability: TransportAvailability,
 ) -> Result<(), IngressError> {
     let smtp = config.ingress.smtp.as_ref().ok_or(IngressError::Disabled)?;
-    let ctx = context(&config, queue, handle);
+    let ctx = context(&config, queue, handle, availability);
     let mut server = configured_server(&smtp.hostname, ctx)?;
     server
         .with_addr(&smtp.bind)
@@ -367,10 +385,11 @@ pub fn serve_with_listener(
     config: Arc<Config>,
     queue: Arc<dyn Queue>,
     handle: Handle,
+    availability: TransportAvailability,
     listener: TcpListener,
 ) -> Result<(), IngressError> {
     let smtp = config.ingress.smtp.as_ref().ok_or(IngressError::Disabled)?;
-    let ctx = context(&config, queue, handle);
+    let ctx = context(&config, queue, handle, availability);
     let mut server = configured_server(&smtp.hostname, ctx)?;
     server.with_tcp_listener(listener);
     server
@@ -423,11 +442,28 @@ mod tests {
 
     /// Starts the ingress on an ephemeral port and returns the port.
     fn start_server(config: Arc<Config>, queue: Arc<SqliteQueue>) -> u16 {
+        start_server_with(config, queue, test_availability())
+    }
+
+    /// Transports every test config may route to.
+    fn test_availability() -> TransportAvailability {
+        TransportAvailability::new(
+            ["graph", "teams", "ntfy"].map(String::from),
+            Some("graph".to_string()),
+        )
+    }
+
+    /// Like [`start_server`], with explicit transport availability.
+    fn start_server_with(
+        config: Arc<Config>,
+        queue: Arc<SqliteQueue>,
+        availability: TransportAvailability,
+    ) -> u16 {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
         let handle = Handle::current();
         std::thread::spawn(move || {
-            let _ = serve_with_listener(config, queue, handle, listener);
+            let _ = serve_with_listener(config, queue, handle, availability, listener);
         });
         port
     }
@@ -477,7 +513,13 @@ mod tests {
         let server_queue = queue.clone();
         let server_config = config.clone();
         std::thread::spawn(move || {
-            let _ = serve_with_listener(server_config, server_queue, handle, listener);
+            let _ = serve_with_listener(
+                server_config,
+                server_queue,
+                handle,
+                test_availability(),
+                listener,
+            );
         });
 
         let stream = TcpStream::connect(("127.0.0.1", port))
@@ -540,7 +582,8 @@ mod tests {
         let handle = Handle::current();
         let server_queue = queue.clone();
         std::thread::spawn(move || {
-            let _ = serve_with_listener(config, server_queue, handle, listener);
+            let _ =
+                serve_with_listener(config, server_queue, handle, test_availability(), listener);
         });
 
         let stream = TcpStream::connect(("127.0.0.1", port))
@@ -598,7 +641,8 @@ mod tests {
         let handle = Handle::current();
         let server_queue = queue.clone();
         std::thread::spawn(move || {
-            let _ = serve_with_listener(config, server_queue, handle, listener);
+            let _ =
+                serve_with_listener(config, server_queue, handle, test_availability(), listener);
         });
 
         let stream = TcpStream::connect(("127.0.0.1", port))
@@ -727,5 +771,69 @@ mod tests {
         assert_eq!(due[0].to[0].email, "ignored@example.com");
         assert_eq!(due[1].transport.as_deref(), Some("teams"));
         assert_eq!(due[1].to[0].email, "ops@teams.local");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn defers_mail_when_routed_transport_unavailable() {
+        // "teams" was skipped at startup, so the mail must get a 451 and
+        // nothing may be enqueued.
+        let raw = r#"
+            [ingress.smtp]
+            [security]
+            ip_whitelist = ["127.0.0.1"]
+            [auth.anonymous]
+            enabled = true
+            [routing.senders."bla@teams"]
+            transport = "teams"
+        "#;
+        let config = Arc::new(Config::from_toml_str(raw).expect("config"));
+        let queue = memory_queue().await;
+        let availability = TransportAvailability::new(["graph".to_string()], Some("graph".into()));
+        let port = start_server_with(config, queue.clone(), availability);
+
+        let code = submit_mail(port, "bla@teams", "x@example.com", "Hallo").await;
+        assert!(code.starts_with("451"), "expected deferral, got {code}");
+        assert!(code.contains("4.3.0"), "got {code}");
+
+        let due = queue
+            .fetch_due(10, chrono::Utc::now())
+            .await
+            .expect("fetch");
+        assert!(due.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn defers_whole_fan_out_when_one_target_unavailable() {
+        let raw = r#"
+            [ingress.smtp]
+            [security]
+            ip_whitelist = ["127.0.0.1"]
+            [auth.anonymous]
+            enabled = true
+            [routing.senders."alarm@example.com"]
+            targets = [{ transport = "graph" }, { transport = "teams" }]
+        "#;
+        let config = Arc::new(Config::from_toml_str(raw).expect("config"));
+        let queue = memory_queue().await;
+        let availability = TransportAvailability::new(["graph".to_string()], None);
+        let port = start_server_with(config, queue.clone(), availability);
+
+        let code = submit_mail(port, "alarm@example.com", "x@example.com", "Alarm").await;
+        assert!(code.starts_with("451"), "expected deferral, got {code}");
+        let due = queue
+            .fetch_due(10, chrono::Utc::now())
+            .await
+            .expect("fetch");
+        assert!(due.is_empty(), "no partial delivery");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn defers_mail_when_default_transport_unavailable() {
+        let queue = memory_queue().await;
+        let availability = TransportAvailability::new(["smtp".to_string()], Some("graph".into()));
+        let port = start_server_with(Arc::new(test_config()), queue.clone(), availability);
+
+        let code = submit_mail(port, "a@example.com", "x@example.com", "Hallo").await;
+        assert!(code.starts_with("451"), "expected deferral, got {code}");
     }
 }

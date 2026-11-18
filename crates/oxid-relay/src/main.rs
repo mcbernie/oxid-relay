@@ -3,7 +3,7 @@
 //! Wires together CLI, configuration, logging, the queue, the transports
 //! (SMTP plus Rhai plugins) and the background dispatcher.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::Parser;
 use fs4::FileExt;
+use oxid_relay_core::config::RoutingConfig;
 use oxid_relay_core::{Config, Queue, Transport};
 use oxid_relay_dispatcher::{Dispatcher, DispatcherConfig, RetryPolicy};
 use oxid_relay_plugin::{
@@ -114,25 +115,21 @@ async fn run_relay(
     if transports.is_empty() {
         tracing::warn!("no transports configured; mails cannot be delivered");
     }
-    // A default transport that was never built (e.g. a plugin skipped due to a
-    // missing secret) would silently fail every untargeted mail. Surface it now.
-    if let Some(name) = &default_transport {
-        if !transports.contains_key(name) {
-            tracing::error!(
-                default = %name,
-                "default transport not available; check the transport config and required secrets"
-            );
-        }
-    }
+    report_unavailable_transports(&config.routing, default_transport.as_deref(), &transports);
 
     // SMTP ingress runs on its own thread (mailin uses blocking IO). It shares
     // the queue and enqueues incoming mail via the runtime handle.
     if config.ingress.smtp.is_some() {
         let ingress_config = config.clone();
         let ingress_queue = queue.clone();
+        let availability = oxid_relay_ingress_smtp::TransportAvailability::new(
+            transports.keys().cloned(),
+            default_transport.clone(),
+        );
         let handle = tokio::runtime::Handle::current();
         std::thread::spawn(move || {
-            if let Err(err) = oxid_relay_ingress_smtp::serve(ingress_config, ingress_queue, handle)
+            if let Err(err) =
+                oxid_relay_ingress_smtp::serve(ingress_config, ingress_queue, handle, availability)
             {
                 tracing::error!(error = %err, "smtp ingress stopped");
             }
@@ -236,6 +233,28 @@ fn sqlite_url(database: &str) -> String {
         database.to_string()
     } else {
         format!("sqlite:{database}")
+    }
+}
+
+/// Logs an error for every transport that the default setting or the routing
+/// rules refer to but that was never built (e.g. a plugin skipped because a
+/// secret is missing). Such mail would otherwise be accepted and then fail.
+fn report_unavailable_transports(
+    routing: &RoutingConfig,
+    default_transport: Option<&str>,
+    transports: &HashMap<String, Arc<dyn Transport>>,
+) {
+    let referenced = routing
+        .referenced_transports()
+        .into_iter()
+        .chain(default_transport.map(str::to_string));
+    for name in referenced.collect::<BTreeSet<_>>() {
+        if !transports.contains_key(&name) {
+            tracing::error!(
+                transport = %name,
+                "transport referenced by default/routing is not available; check the transport config and required secrets"
+            );
+        }
     }
 }
 
