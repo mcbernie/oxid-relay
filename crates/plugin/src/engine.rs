@@ -68,13 +68,13 @@ pub fn build_engine(http: Arc<dyn HttpClient>) -> Engine {
         );
     }
 
-    engine.register_fn(
-        "to_json",
-        |value: Dynamic| -> Result<String, Box<EvalAltResult>> {
-            serde_json::to_string(&value)
-                .map_err(|err| Box::<EvalAltResult>::from(format!("to_json: {err}")))
-        },
-    );
+    // Rhai ships its own `to_json(Map)` whose string escaping follows Rust's
+    // `Debug` format (`\u{a0}`, `\0`), producing invalid JSON. Registering exact
+    // `Map` and `Array` overloads makes ours win the call resolution; the
+    // `Dynamic` overload covers scalars.
+    engine.register_fn("to_json", |value: Map| json_encode(&value));
+    engine.register_fn("to_json", |value: rhai::Array| json_encode(&value));
+    engine.register_fn("to_json", |value: Dynamic| json_encode(&value));
 
     engine.register_fn(
         "parse_json",
@@ -90,6 +90,12 @@ pub fn build_engine(http: Arc<dyn HttpClient>) -> Engine {
     });
 
     engine
+}
+
+/// Serialises a value to standards-compliant JSON via `serde_json`.
+fn json_encode<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, Box<EvalAltResult>> {
+    serde_json::to_string(value)
+        .map_err(|err| Box::<EvalAltResult>::from(format!("to_json: {err}")))
 }
 
 /// Executes a request through the client and maps the result into a Rhai map.
@@ -157,6 +163,36 @@ mod tests {
         let result: String = engine.eval(script).expect("eval");
         assert!(result.contains("\"a\":1"));
         assert!(result.contains("\"b\":\"x\""));
+    }
+
+    /// Evaluates `script` with an engine whose HTTP client is never used.
+    fn eval_offline(script: &str) -> String {
+        let engine = build_engine(Arc::new(MockHttp {
+            rules: vec![],
+            seen: Mutex::new(vec![]),
+        }));
+        engine.eval(script).expect("eval")
+    }
+
+    #[test]
+    fn to_json_map_escapes_special_characters_validly() {
+        // NBSP, NUL, zero-width space, umlaut, quote, backslash, newline.
+        let json = eval_offline(
+            "to_json(#{ text: \"a\u{a0}b\\u0000c\u{200b}ä\\\"\\\\\\n\", nested: #{ list: [1, \"x\"] } })",
+        );
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(value["text"], "a\u{a0}b\u{0}c\u{200b}ä\"\\\n");
+        assert_eq!(value["nested"]["list"][1], "x");
+    }
+
+    #[test]
+    fn to_json_array_and_scalar_are_valid() {
+        let array = eval_offline(r#"to_json([" ", 2])"#);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&array).expect("valid JSON")[0],
+            "\u{a0}"
+        );
+        assert_eq!(eval_offline(r#"to_json("\u0000")"#), r#""\u0000""#);
     }
 
     #[test]

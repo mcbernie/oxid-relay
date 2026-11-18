@@ -194,6 +194,38 @@ mod tests {
         );
     }
 
+    /// Regression: bodies with NBSP/NUL/zero-width characters used to produce
+    /// invalid JSON (Graph answered 400 "Unable to read JSON request payload").
+    #[tokio::test]
+    async fn graph_plugin_sends_valid_json_for_special_characters() {
+        let mock = Arc::new(MockHttp {
+            rules: vec![
+                (
+                    "login.microsoftonline.com".into(),
+                    200,
+                    r#"{"access_token":"abc123"}"#.into(),
+                ),
+                ("graph.microsoft.com".into(), 202, String::new()),
+            ],
+            seen: Mutex::new(vec![]),
+        });
+        let engine = build_engine(mock.clone());
+        let plugin = load_plugin(&engine, &graph_plugin_dir()).expect("load graph plugin");
+        let transport = RhaiTransport::new(plugin, Arc::new(engine), graph_config());
+
+        let body = "Bestellung\u{a0}Nr.\u{200b} 42\u{0} – Grüße \"Shop\"";
+        let mut mail = sample_mail();
+        mail.body = body.into();
+        transport.send(&mail).await.expect("send");
+
+        let seen = mock.seen.lock().expect("lock");
+        let HttpBody::Text(text) = &seen[1].body else {
+            panic!("expected a text body");
+        };
+        let json: serde_json::Value = serde_json::from_str(text).expect("valid JSON payload");
+        assert_eq!(json["message"]["body"]["content"], body);
+    }
+
     #[tokio::test]
     async fn graph_plugin_propagates_token_failure() {
         let mock = Arc::new(MockHttp {
