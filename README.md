@@ -80,78 +80,90 @@ that variable at runtime.
 The process shuts down cleanly on SIGINT (Ctrl-C) and, on Unix, on SIGTERM
 (sent by service managers on stop).
 
-## Test builds
+## Installation
 
-Until there is a release workflow, the CI run on `main` attaches a bundle per OS
-(`oxid-relay-windows-latest`, `-ubuntu-latest`, `-macos-latest`) to the workflow
-run under the Actions tab. Each contains the release binary, the bundled
-`plugins/`, `config.example.toml` and a short README. Download, extract, then:
-
-```
-# point the relay at the bundled plugins (release builds do not use ./plugins)
-export OXID_RELAY_PLUGIN_DIR="$PWD/plugins"   # PowerShell: $env:OXID_RELAY_PLUGIN_DIR = "$PWD\plugins"
-cp config.example.toml config.toml            # then edit
-./oxid-relay --config config.toml
-```
-
-These are unsigned test builds, not releases.
-
-## Running as a service
-
-Run exactly one instance per queue. A second instance against the same queue
-database refuses to start (an exclusive lock guards it).
+Download the archive for your platform from the
+[latest release](https://github.com/mcbernie/oxid-relay/releases/latest)
+(`oxid-relay-v<version>-<target>.tar.gz` or `.zip`) and verify it against
+`SHA256SUMS`. Each archive contains the binary, the bundled `plugins/`,
+`config.example.toml` and a short `README.txt`.
 
 ### Linux (systemd)
 
-A unit file is provided in `packaging/systemd/oxid-relay.service`.
-
 ```
-sudo useradd --system --home /var/lib/oxid-relay --shell /usr/sbin/nologin oxid-relay
-sudo install -m 0755 target/release/oxid-relay /usr/local/bin/oxid-relay
-sudo install -d /etc/oxid-relay
-sudo install -m 0640 config.toml /etc/oxid-relay/config.toml
-# Secrets, mode 0600:
-printf 'CLIENT_SECRET_AZURE=...\nTEAMS_WEBHOOK_URL=...\n' | sudo tee /etc/oxid-relay/oxid-relay.env >/dev/null
-sudo chmod 0600 /etc/oxid-relay/oxid-relay.env
-sudo cp packaging/systemd/oxid-relay.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now oxid-relay
-journalctl -u oxid-relay -f
+mkdir oxid-relay && tar -xzf oxid-relay-v*-x86_64-unknown-linux-gnu.tar.gz -C oxid-relay && cd oxid-relay
+sudo ./oxid-relay install
 ```
 
-Release builds do not auto-load `.env`; the unit reads secrets from
-`/etc/oxid-relay/oxid-relay.env`. The queue and its lock live under
-`/var/lib/oxid-relay`; plugins are looked up in `/etc/oxid-relay/plugins`.
+`install` copies the binary to `/usr/local/bin`, the plugins to
+`/etc/oxid-relay/plugins`, creates `/etc/oxid-relay/config.toml` from the example
+(an existing config is never touched), creates the system user `oxid-relay`,
+writes and enables a hardened systemd unit and starts the service. Secrets
+(`CLIENT_SECRET_AZURE`, `TEAMS_WEBHOOK_URL`, ...) go into
+`/etc/oxid-relay/oxid-relay.env` (mode 0600). The queue lives in
+`/var/lib/oxid-relay`. Logs: `journalctl -u oxid-relay -f`.
+
+### Windows (service)
+
+From an elevated PowerShell in the extracted folder:
+
+```
+.\oxid-relay.exe install
+```
+
+This copies the binary to `C:\Program Files\OxidRelay`, plugins and config to
+`C:\ProgramData\OxidRelay` and registers the service `oxid-relay` (automatic
+start, restart on failure). Secrets are read from machine-level environment
+variables; set them with
+`[Environment]::SetEnvironmentVariable(name, value, 'Machine')` and restart the
+service (`Restart-Service oxid-relay`). Service stdout is not captured yet;
+Windows Event Log / file logging is planned.
+
+### Updating
+
+Updates only happen on request:
+
+```
+oxid-relay update --check     # show installed and latest version
+sudo oxid-relay update        # Windows: from an elevated PowerShell
+```
+
+`update` downloads the release for the running platform, verifies its SHA256
+checksum, stops the service, replaces the binary and the bundled plugins (your
+own plugins, config, secrets and queue are left alone) and starts the service
+again. If it does not come up, the previous binary is restored. A specific
+release can be installed with `--version v0.2.0`; `--force` reinstalls or
+downgrades.
+
+### Uninstalling
+
+```
+sudo oxid-relay uninstall           # keeps config, secrets and queue
+sudo oxid-relay uninstall --purge   # removes everything
+```
 
 ### macOS (launchd)
 
-A LaunchDaemon plist is provided in `packaging/launchd/com.oxid-relay.plist`.
+`install` does not support macOS yet. A LaunchDaemon plist is provided in
+`packaging/launchd/com.oxid-relay.plist`:
 
 ```
-sudo cp target/release/oxid-relay /usr/local/bin/oxid-relay
+sudo cp oxid-relay /usr/local/bin/oxid-relay
 sudo mkdir -p /usr/local/etc/oxid-relay /usr/local/var/lib/oxid-relay
 sudo cp config.toml /usr/local/etc/oxid-relay/config.toml
 sudo cp packaging/launchd/com.oxid-relay.plist /Library/LaunchDaemons/
 sudo launchctl load /Library/LaunchDaemons/com.oxid-relay.plist
 ```
 
-### Windows
+Run exactly one instance per queue. A second instance against the same queue
+database refuses to start (an exclusive lock guards it).
 
-The binary runs as a Windows service when started with `--service` (the service
-control manager passes this). An install script is in
-`packaging/windows/install-service.ps1`. From an elevated PowerShell, after
-adjusting the paths inside it:
+### Publishing a release
 
-```
-powershell -ExecutionPolicy Bypass -File packaging\windows\install-service.ps1
-```
-
-It registers the service with `binPath` pointing at the executable plus
-`--service --config <path>`. Secrets are read from machine-level environment
-variables (release builds do not load `.env`); set them with
-`[Environment]::SetEnvironmentVariable(name, value, 'Machine')` and restart the
-service. Note that service stdout is not captured yet; Windows Event Log / file
-logging is planned. An MSI installer (cargo-wix) is also planned.
+Bump `version` under `[workspace.package]` in `Cargo.toml`, commit, then push a
+matching tag (`git tag v0.2.0 && git push origin v0.2.0`). The release workflow
+builds the bundles for Linux, Windows and macOS and publishes them with
+`SHA256SUMS`.
 
 ## Configuration
 
@@ -479,12 +491,13 @@ Available:
 - Dispatcher tuning via configuration (concurrency, poll interval, retry
   backoff, attempt limit).
 - GitHub Actions CI building and testing on Linux, macOS and Windows.
+- Release workflow and `oxid-relay install` / `uninstall` / `update` for Linux
+  (systemd) and Windows (service).
 
 Planned:
 
 - STARTTLS plus AUTH LOGIN/PLAIN for the ingress.
-- MSI installer (cargo-wix) and Windows Event Log / file logging.
-- GitHub Actions release workflow (binaries, installers).
+- Windows Event Log / file logging.
 - Additional transports and providers (for example Mailgun, Amazon SES, SMS).
 
 All of this is still to come. Contributions and issues are welcome.
