@@ -1,6 +1,21 @@
 //! Platform service managers behind one trait.
+//!
+//! - [`systemd`] on Linux,
+//! - [`windows`] (the service control manager) on Windows.
+//!
+//! [`command`] holds the external-command abstraction the systemd backend
+//! uses, [`privilege`] the administrator check.
+
+pub mod command;
+pub mod privilege;
+#[cfg(unix)]
+pub mod systemd;
+#[cfg(windows)]
+pub mod windows;
 
 use crate::layout::InstallLayout;
+
+pub use privilege::ensure_admin;
 
 /// Registers and controls the relay as a system service.
 pub trait ServiceManager {
@@ -17,9 +32,26 @@ pub trait ServiceManager {
     fn is_running(&self) -> anyhow::Result<bool>;
     /// Whether the service is registered at all.
     fn is_registered(&self) -> anyhow::Result<bool>;
+    /// Removes platform extras created by [`register`](Self::register) that
+    /// outlive the registration, such as the Linux service account. Called by
+    /// `uninstall --purge` after [`unregister`](Self::unregister).
+    fn purge(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// The service manager for the platform this binary runs on.
 pub fn current() -> anyhow::Result<Box<dyn ServiceManager>> {
-    todo!("installer agent: systemd on Linux, SCM on Windows, error on macOS")
+    #[cfg(windows)]
+    {
+        Ok(Box::new(windows::WindowsServices))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        anyhow::bail!("installing as a service is not supported on macOS yet")
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Ok(Box::new(systemd::Systemd::detect()?))
+    }
 }

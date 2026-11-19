@@ -1,25 +1,13 @@
-# Installs OxidRelay as a Windows service. Run from an elevated PowerShell.
+# Superseded: run `oxid-relay.exe install` from an elevated PowerShell in the
+# unpacked release archive instead. It copies the binary and plugins, creates
+# C:\ProgramData\OxidRelay\config.toml, and registers and starts the
+# "oxid-relay" service (with restart-on-failure). Remove it again with
+# `oxid-relay.exe uninstall [--purge]`.
 #
-# Adjust the paths below before running. Secrets (CLIENT_SECRET_AZURE,
-# TEAMS_WEBHOOK_URL, ...) are read from machine-level environment variables;
-# set them with [Environment]::SetEnvironmentVariable(..., 'Machine') and
-# restart the service so it picks them up.
+# Secrets (CLIENT_SECRET_AZURE, TEAMS_WEBHOOK_URL, ...) are read from
+# machine-level environment variables:
+#   [Environment]::SetEnvironmentVariable('CLIENT_SECRET_AZURE', '<secret>', 'Machine')
+#   Restart-Service oxid-relay
 
-$ServiceName = 'OxidRelay'
-$ExePath     = 'C:\Program Files\OxidRelay\oxid-relay.exe'
-$ConfigPath  = 'C:\ProgramData\OxidRelay\config.toml'
-
-# Quoting matters: the whole command line is one binPath value.
-$BinPath = '"{0}" --service --config "{1}"' -f $ExePath, $ConfigPath
-
-sc.exe create $ServiceName binPath= $BinPath start= auto
-sc.exe description $ServiceName "OxidRelay mail relay and notification gateway"
-
-# Example: set a secret at machine scope (then start/restart the service).
-# [Environment]::SetEnvironmentVariable('CLIENT_SECRET_AZURE', '<secret>', 'Machine')
-
-sc.exe start $ServiceName
-
-# Uninstall:
-#   sc.exe stop $ServiceName
-#   sc.exe delete $ServiceName
+Write-Host 'This script is superseded. Run: .\oxid-relay.exe install (elevated PowerShell)'
+exit 1

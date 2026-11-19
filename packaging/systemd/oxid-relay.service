@@ -1,3 +1,6 @@
+# Reference copy. `sudo ./oxid-relay install` generates this unit (with the
+# service account, env file and paths) and enables it; edit the generator in
+# crates/installer/src/service/systemd.rs rather than relying on this file.
 [Unit]
 Description=OxidRelay mail relay and notification gateway
 Documentation=https://github.com/mcbernie/oxid-relay
@@ -9,8 +12,8 @@ Type=simple
 ExecStart=/usr/local/bin/oxid-relay --config /etc/oxid-relay/config.toml
 
 # Secrets (CLIENT_SECRET_AZURE, TEAMS_WEBHOOK_URL, ...) come from an environment
-# file. Create it with mode 0600, owned by the service user. The leading "-"
-# makes it optional.
+# file with mode 0600, owned by root (systemd reads it before dropping
+# privileges). The leading "-" makes it optional.
 EnvironmentFile=-/etc/oxid-relay/oxid-relay.env
 
 Restart=on-failure
