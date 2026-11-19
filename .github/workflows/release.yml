@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: verify tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches workspace version
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          cargo_version="$(awk '
+            /^\[/ { in_ws = ($0 == "[workspace.package]") }
+            in_ws && /^version[[:space:]]*=/ {
+              gsub(/^[^"]*"|".*$/, ""); print; exit
+            }' Cargo.toml)"
+          echo "tag version:   ${tag_version}"
+          echo "Cargo version: ${cargo_version}"
+          if [ -z "${cargo_version}" ] || [ "${tag_version}" != "${cargo_version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match [workspace.package] version '${cargo_version}' in Cargo.toml"
+            exit 1
+          fi
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bin: oxid-relay
+            ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: oxid-relay.exe
+            ext: zip
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: oxid-relay
+            ext: tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # aws-lc-sys (pulled in by rustls) needs NASM to build on Windows.
+      - name: Install NASM (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked -p oxid-relay --target ${{ matrix.target }}
+
+      - name: Assemble bundle
+        shell: bash
+        run: |
+          mkdir -p dist/plugins
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" dist/
+          cp -r plugins/* dist/plugins/
+          cp config.example.toml dist/
+          cat > dist/README.txt <<'TXT'
+          OxidRelay
+
+          Install
+            Linux:    sudo ./oxid-relay install
+            Windows:  run in an elevated PowerShell:  .\oxid-relay.exe install
+
+          Configure
+            Edit the config file:
+              Linux:    /etc/oxid-relay/config.toml
+              Windows:  C:\ProgramData\OxidRelay\config.toml
+            (config.example.toml in this archive is a starting point.)
+
+            Put secrets in:
+              Linux:    /etc/oxid-relay/oxid-relay.env
+              Windows:  machine-level environment variables
+
+          Update
+            oxid-relay update
+          TXT
+
+      - name: Create archive
+        id: archive
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="oxid-relay-v${version}-${{ matrix.target }}.${{ matrix.ext }}"
+          cd dist
+          if [ "${{ matrix.ext }}" = "zip" ]; then
+            7z a -tzip "../${name}" * > /dev/null
+          else
+            tar -czf "../${name}" *
+          fi
+          cd ..
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.archive.outputs.name }}
+          path: ${{ steps.archive.outputs.name }}
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        working-directory: artifacts
+        run: |
+          sha256sum oxid-relay-v*.tar.gz oxid-relay-v*.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/oxid-relay-v*.tar.gz
+            artifacts/oxid-relay-v*.zip
+            artifacts/SHA256SUMS
