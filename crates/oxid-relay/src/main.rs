@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use fs4::FileExt;
 use oxid_relay_core::config::RoutingConfig;
 use oxid_relay_core::{Config, Queue, Transport};
@@ -33,11 +33,48 @@ struct Cli {
     #[cfg(windows)]
     #[arg(long, hide = true)]
     service: bool,
+
+    /// Maintenance command; without one the relay runs in the foreground.
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// Maintenance commands. All except `update --check` need root/Administrator.
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Install this bundle as a system service (systemd / Windows service).
+    Install {
+        /// Register the service but do not start it.
+        #[arg(long)]
+        no_start: bool,
+    },
+    /// Remove the service and binary. Config, secrets and queue are kept.
+    Uninstall {
+        /// Also delete configuration, secrets, plugins and queue data.
+        #[arg(long)]
+        purge: bool,
+    },
+    /// Update to the latest GitHub release (only ever on request).
+    Update {
+        /// Only show installed and available versions.
+        #[arg(long)]
+        check: bool,
+        /// Reinstall even if already up to date.
+        #[arg(long)]
+        force: bool,
+        /// Install a specific release tag, e.g. v0.2.0.
+        #[arg(long, value_name = "TAG")]
+        version: Option<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
     load_dotenv();
     let cli = Cli::parse();
+
+    if let Some(command) = cli.command {
+        return run_command(command);
+    }
 
     #[cfg(windows)]
     if cli.service {
@@ -45,6 +82,26 @@ fn main() -> anyhow::Result<()> {
     }
 
     run_foreground(cli.config)
+}
+
+/// Executes a maintenance command (install, uninstall, update).
+fn run_command(command: Command) -> anyhow::Result<()> {
+    use oxid_relay_installer as installer;
+    match command {
+        Command::Install { no_start } => {
+            installer::install(&installer::InstallOptions { no_start })
+        }
+        Command::Uninstall { purge } => installer::uninstall(purge),
+        Command::Update {
+            check,
+            force,
+            version,
+        } => installer::update(&installer::UpdateOptions {
+            check,
+            force,
+            version,
+        }),
+    }
 }
 
 /// Runs the relay in the foreground (console, systemd or launchd), stopping on

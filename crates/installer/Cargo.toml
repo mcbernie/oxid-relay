@@ -1,0 +1,33 @@
+[package]
+name = "oxid-relay-installer"
+description = "Install, uninstall and self-update support for OxidRelay."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+sha2 = "0.10"
+semver = "1"
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+flate2 = "1"
+tar = "0.4"
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }
+windows-service = "0.7"
+
+[dev-dependencies]
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }

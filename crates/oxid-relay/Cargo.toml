@@ -20,6 +20,7 @@ oxid-relay-logging.workspace = true
 oxid-relay-plugin.workspace = true
 oxid-relay-dispatcher.workspace = true
 oxid-relay-ingress-smtp.workspace = true
+oxid-relay-installer.workspace = true
 
 tokio.workspace = true
 clap.workspace = true

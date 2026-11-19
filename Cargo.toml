@@ -10,6 +10,7 @@ members = [
     "crates/plugin",
     "crates/dispatcher",
     "crates/ingress-smtp",
+    "crates/installer",
 ]
 
 [workspace.package]
@@ -30,6 +31,7 @@ oxid-relay-logging = { path = "crates/logging" }
 oxid-relay-plugin = { path = "crates/plugin" }
 oxid-relay-dispatcher = { path = "crates/dispatcher" }
 oxid-relay-ingress-smtp = { path = "crates/ingress-smtp" }
+oxid-relay-installer = { path = "crates/installer" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
